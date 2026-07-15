@@ -33,4 +33,6 @@ Client able to connect and have an emoji or shape appear on the page, and able t
 
 --- Development Phase 2 ---
 
-TBD
+Add a "boss" mob at the top of the screen. Every few seconds, it will begin a cast bar.
+5 random tiles will glow when the cast bar is channeling. If a player ends in one of those tiles, they lose a life.
+Display lives for each player on the left side of the screen. Each player starts with 3.

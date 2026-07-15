@@ -13,7 +13,7 @@ export default function PhaserGame() {
       type: Phaser.AUTO,
       parent: containerRef.current,
       width: 480,
-      height: 480,
+      height: 600,
       backgroundColor: '#16213e',
       scene: [GridScene],
     });

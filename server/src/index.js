@@ -27,15 +27,23 @@ app.get('/health', (_req, res) => res.json({ ok: true, players: game.players.siz
 app.use(express.static(clientDist));
 
 io.on('connection', (socket) => {
-  const player = game.addPlayer(socket.id);
-  if (!player) {
-    socket.emit('gameFull');
-    socket.disconnect(true);
-    return;
-  }
-
-  console.log(`player connected: ${socket.id} at (${player.x}, ${player.y})`);
-  socket.emit('welcome', { id: player.id, state: game.snapshot() });
+  // The client requests its initial snapshot once its listener is ready,
+  // rather than us pushing it immediately — on a fast/local connection the
+  // push can otherwise arrive before the client has finished booting its
+  // renderer and race past a not-yet-registered listener.
+  socket.on('ready', () => {
+    let player = game.players.get(socket.id);
+    if (!player) {
+      player = game.addPlayer(socket.id);
+      if (!player) {
+        socket.emit('gameFull');
+        socket.disconnect(true);
+        return;
+      }
+      console.log(`player connected: ${socket.id} at (${player.x}, ${player.y})`);
+    }
+    socket.emit('welcome', { id: player.id, state: game.snapshot() });
+  });
 
   socket.on('move', (direction) => {
     game.tryMove(socket.id, direction);
@@ -49,6 +57,7 @@ io.on('connection', (socket) => {
 
 // Game loop: 30 ticks/second. Broadcasts state only on ticks where it changed.
 setInterval(() => {
+  game.update(Date.now());
   if (game.dirty) {
     game.dirty = false;
     io.emit('state', game.snapshot());

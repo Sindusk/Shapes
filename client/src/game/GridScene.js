@@ -6,6 +6,7 @@ const TILE = 90;
 const GAP = 4;
 const BOARD = GRID_SIZE * TILE + (GRID_SIZE - 1) * GAP;
 const MOVE_COOLDOWN_MS = 150; // client-side throttle; the server still validates every move
+const BOSS_ZONE_HEIGHT = 120; // reserved space above the grid for the boss + cast bar
 
 export default class GridScene extends Phaser.Scene {
   constructor() {
@@ -13,13 +14,15 @@ export default class GridScene extends Phaser.Scene {
     this.myId = null;
     this.sprites = new Map(); // player id -> Phaser.GameObjects.Graphics
     this.lastMoveAt = 0;
+    this.glowTiles = []; // graphics for currently-highlighted boss tiles
   }
 
   create() {
     this.originX = (this.scale.width - BOARD) / 2;
-    this.originY = (this.scale.height - BOARD) / 2;
+    this.originY = BOSS_ZONE_HEIGHT;
 
     this.drawGrid();
+    this.drawBoss();
 
     this.keys = this.input.keyboard.addKeys({
       up: Phaser.Input.Keyboard.KeyCodes.UP,
@@ -40,6 +43,7 @@ export default class GridScene extends Phaser.Scene {
 
     socket.on('welcome', this.onWelcome);
     socket.on('state', this.onState);
+    socket.emit('ready');
 
     this.events.on(Phaser.Scenes.Events.SHUTDOWN, () => {
       socket.off('welcome', this.onWelcome);
@@ -69,6 +73,62 @@ export default class GridScene extends Phaser.Scene {
     };
   }
 
+  drawBoss() {
+    const centerX = this.originX + BOARD / 2;
+    const bossY = 34;
+    const g = this.add.graphics();
+    g.fillStyle(0x8e2de2, 1);
+    g.fillTriangle(centerX, bossY - 26, centerX - 30, bossY + 20, centerX + 30, bossY + 20);
+    g.lineStyle(2, 0xffffff, 0.6);
+    g.strokeTriangle(centerX, bossY - 26, centerX - 30, bossY + 20, centerX + 30, bossY + 20);
+
+    const barWidth = BOARD;
+    const barHeight = 12;
+    const barX = this.originX;
+    const barY = 70;
+
+    this.castBarBg = this.add.graphics();
+    this.castBarBg.fillStyle(0x1a1a2e, 1);
+    this.castBarBg.fillRoundedRect(barX, barY, barWidth, barHeight, 4);
+    this.castBarBg.setVisible(false);
+
+    this.castBarFill = this.add.graphics();
+    this.castBarFill.setVisible(false);
+    this.castBar = { x: barX, y: barY, width: barWidth, height: barHeight };
+  }
+
+  updateBoss(boss) {
+    const channeling = boss.state === 'channeling';
+    this.castBarBg.setVisible(channeling);
+    this.castBarFill.setVisible(channeling);
+
+    this.castBarFill.clear();
+    if (channeling) {
+      const { x, y, width, height } = this.castBar;
+      this.castBarFill.fillStyle(0xe74c3c, 1);
+      this.castBarFill.fillRoundedRect(x, y, width * Math.min(boss.progress, 1), height, 4);
+    }
+
+    for (const g of this.glowTiles) g.destroy();
+    this.glowTiles = [];
+
+    if (channeling) {
+      for (const tile of boss.tiles) {
+        const g = this.add.graphics();
+        g.fillStyle(0xe74c3c, 0.45);
+        g.fillRoundedRect(
+          this.originX + tile.x * (TILE + GAP),
+          this.originY + tile.y * (TILE + GAP),
+          TILE,
+          TILE,
+          8
+        );
+        g.setDepth(0.5);
+        this.glowTiles.push(g);
+      }
+    }
+  }
+
   drawGrid() {
     const g = this.add.graphics();
     g.fillStyle(0x0f3460, 1);
@@ -86,6 +146,11 @@ export default class GridScene extends Phaser.Scene {
   }
 
   applyState(state) {
+    // Guards against a stray event reaching a scene that's already been torn
+    // down (e.g. React dev-mode's double-mount briefly creates and destroys
+    // a scene while its socket listeners are still deregistering).
+    if (!this.sys || !this.sys.displayList) return;
+
     const seen = new Set();
 
     for (const player of state.players) {
@@ -96,10 +161,12 @@ export default class GridScene extends Phaser.Scene {
       if (!sprite) {
         sprite = this.createShape(player);
         sprite.setPosition(px, py);
+        sprite.setDepth(1);
         this.sprites.set(player.id, sprite);
       } else if (sprite.x !== px || sprite.y !== py) {
         this.tweens.add({ targets: sprite, x: px, y: py, duration: 100, ease: 'Power2' });
       }
+      sprite.setAlpha(player.eliminated ? 0.25 : 1);
     }
 
     // Remove sprites for players that left.
@@ -109,6 +176,8 @@ export default class GridScene extends Phaser.Scene {
         this.sprites.delete(id);
       }
     }
+
+    if (state.boss) this.updateBoss(state.boss);
   }
 
   createShape(player) {
