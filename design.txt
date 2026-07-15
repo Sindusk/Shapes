@@ -1,0 +1,36 @@
+--- Shapes Game ---
+
+Browser-Based Client
+- React
+- Phaser 3
+- Socket.IO
+
+Backend Node.JS Server
+- Express
+- Socket.IO
+- Game Loop (30 ticks/second)
+- Prisma
+- PostgreSQL
+
+Node, React, Prisma, and PostgreSQL are already installed.
+Phaser and Socket are probably not installed.
+The game will be hosted on shapes.consistencykings.com.
+Users will be shared with other applications on the domain via the PostgreSQL database table "users".
+
+--- General Game Concept ---
+
+A 5x5 grid is presented. Each player has an avatar that takes up one tile.
+- Only one player may be on a tile at a time. There is collision, and attempts to move to an occupied tile will be denied.
+- Players can move horizontally and vertically. There will not be diagonal movement.
+- A boss will be at the top of the screen. It will begin channeling an ability at certain intervals.
+- At the start of the channel, tiles will start to glow. At the end of the channel, any player in those tiles will be killed.
+- Players have 3 lives. When they run out of lives, they are eliminated.
+
+--- Development Phase 1 ---
+
+Basic Node.JS server implementation where the page loads properly.
+Client able to connect and have an emoji or shape appear on the page, and able to move with WASD or arrow keys.
+
+--- Development Phase 2 ---
+
+TBD
