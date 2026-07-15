@@ -41,6 +41,11 @@ io.on('connection', (socket) => {
         return;
       }
       console.log(`player connected: ${socket.id} at (${player.x}, ${player.y})`);
+      if (player.benched) {
+        socket.emit('benched', {
+          message: 'A match is already in progress — you have been benched and will join once it concludes.',
+        });
+      }
     }
     socket.emit('welcome', { id: player.id, state: game.snapshot() });
   });

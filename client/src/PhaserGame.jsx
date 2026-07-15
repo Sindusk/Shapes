@@ -12,8 +12,8 @@ export default function PhaserGame() {
     gameRef.current = new Phaser.Game({
       type: Phaser.AUTO,
       parent: containerRef.current,
-      width: 480,
-      height: 600,
+      width: 470,
+      height: 580,
       backgroundColor: '#16213e',
       scene: [GridScene],
     });

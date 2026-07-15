@@ -36,3 +36,27 @@ Client able to connect and have an emoji or shape appear on the page, and able t
 Add a "boss" mob at the top of the screen. Every few seconds, it will begin a cast bar.
 5 random tiles will glow when the cast bar is channeling. If a player ends in one of those tiles, they lose a life.
 Display lives for each player on the left side of the screen. Each player starts with 3.
+
+--- Development Phase 3 ---
+
+Increase grid size to 9x9.
+Change the highlight of targeted tiles to white instead of red, and give them a soft blinking effect.
+Add the concept of matches and rounds to the game. A round is one attack by the boss. A match is as many rounds as it takes until only one player remains.
+- If there are no players connected, pause boss attack logic.
+- Once one player connects, give a 15 second countdown. Anyone who connects within those 15 seconds will join the current match. Once the countdown completes, begin the rounds.
+- Any player who connects while a match is in session will be "benched" until the match concludes. Make sure that they receive a text notification saying so.
+- A match concludes when all players are eliminated, including the final one. We'll be making sure matches don't go too long through the next section.
+- Timer of the current match should be visible to everyone.
+- Eliminations should have timestamp of how long they were alive on the sidebar instead of just "Eliminated"
+- Players on the sidebar should be sorted leaderboard-style dynamically, with players with the most lives at the top, and players who are eliminated fastest going to the bottom.
+Change default boss timers, and then begin scaling the difficulty. The following formulas should be used for the boss cast time and channel time:
+progress = elapsed / maxMatchLength;
+castInterval =
+    lerp(7.0, 2, progress * progress);
+channelTime =
+    lerp(5.0, 0.5, progress * progress);
+By default, max match length will be 8 minutes.
+Additionally, the boss will now attack a random amount of squares on each attack, but it will operate on a bell curve of randomness with the ability to hit any amount of tiles on each roll.
+- At the start of the match, the bell curve will have 1/3 of the total tiles be attacked on average.
+- By the end of the match, 2/3 of the tiles should be attacked on average.
+When the max match length is exceeded, all tiles on the board will be hit with every attack. This will mark "enrage" and forcibly end the match after a few attacks.

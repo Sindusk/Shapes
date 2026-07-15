@@ -1,9 +1,9 @@
 import Phaser from 'phaser';
 import { socket } from '../socket.js';
 
-const GRID_SIZE = 5;
-const TILE = 90;
-const GAP = 4;
+const GRID_SIZE = 9;
+const TILE = 48;
+const GAP = 3;
 const BOARD = GRID_SIZE * TILE + (GRID_SIZE - 1) * GAP;
 const MOVE_COOLDOWN_MS = 150; // client-side throttle; the server still validates every move
 const BOSS_ZONE_HEIGHT = 120; // reserved space above the grid for the boss + cast bar
@@ -15,6 +15,8 @@ export default class GridScene extends Phaser.Scene {
     this.sprites = new Map(); // player id -> Phaser.GameObjects.Graphics
     this.lastMoveAt = 0;
     this.glowTiles = []; // graphics for currently-highlighted boss tiles
+    this.boss = { state: 'idle', tiles: [], enraged: false, channelStartAt: 0, channelEndAt: 0 };
+    this.clockOffset = 0; // serverTime - Date.now(), so we can animate off server timestamps
   }
 
   create() {
@@ -52,6 +54,8 @@ export default class GridScene extends Phaser.Scene {
   }
 
   update(time) {
+    this.renderBossFrame(Date.now() + this.clockOffset);
+
     if (time - this.lastMoveAt < MOVE_COOLDOWN_MS) return;
 
     let direction = null;
@@ -97,17 +101,15 @@ export default class GridScene extends Phaser.Scene {
     this.castBar = { x: barX, y: barY, width: barWidth, height: barHeight };
   }
 
+  /** Called only when a 'state'/'welcome' event arrives — rebuilds the glow
+   * tile set on channel start/end. Continuous animation (bar fill, blink)
+   * happens every frame in renderBossFrame(), off the timestamps here, so
+   * the visuals don't stall between broadcasts. */
   updateBoss(boss) {
+    this.boss = boss;
     const channeling = boss.state === 'channeling';
     this.castBarBg.setVisible(channeling);
     this.castBarFill.setVisible(channeling);
-
-    this.castBarFill.clear();
-    if (channeling) {
-      const { x, y, width, height } = this.castBar;
-      this.castBarFill.fillStyle(0xe74c3c, 1);
-      this.castBarFill.fillRoundedRect(x, y, width * Math.min(boss.progress, 1), height, 4);
-    }
 
     for (const g of this.glowTiles) g.destroy();
     this.glowTiles = [];
@@ -115,7 +117,7 @@ export default class GridScene extends Phaser.Scene {
     if (channeling) {
       for (const tile of boss.tiles) {
         const g = this.add.graphics();
-        g.fillStyle(0xe74c3c, 0.45);
+        g.fillStyle(0xffffff, 1);
         g.fillRoundedRect(
           this.originX + tile.x * (TILE + GAP),
           this.originY + tile.y * (TILE + GAP),
@@ -127,6 +129,23 @@ export default class GridScene extends Phaser.Scene {
         this.glowTiles.push(g);
       }
     }
+  }
+
+  /** Runs every render frame; animates the cast bar and glow-tile blink
+   * from the boss's absolute channelStartAt/channelEndAt timestamps. */
+  renderBossFrame(now) {
+    if (this.boss.state !== 'channeling') return;
+
+    const { x, y, width, height } = this.castBar;
+    const span = this.boss.channelEndAt - this.boss.channelStartAt;
+    const progress = span > 0 ? Phaser.Math.Clamp((now - this.boss.channelStartAt) / span, 0, 1) : 1;
+    this.castBarFill.clear();
+    this.castBarFill.fillStyle(0xe74c3c, 1);
+    this.castBarFill.fillRoundedRect(x, y, width * progress, height, 4);
+
+    // Very light, slow blink.
+    const blinkAlpha = 0.1 + 0.05 * Math.sin(now / 450);
+    for (const g of this.glowTiles) g.setAlpha(blinkAlpha);
   }
 
   drawGrid() {
@@ -151,9 +170,13 @@ export default class GridScene extends Phaser.Scene {
     // a scene while its socket listeners are still deregistering).
     if (!this.sys || !this.sys.displayList) return;
 
+    if (typeof state.serverTime === 'number') this.clockOffset = state.serverTime - Date.now();
+
     const seen = new Set();
 
     for (const player of state.players) {
+      if (player.benched || player.x === null || player.y === null) continue; // not on the board
+
       seen.add(player.id);
       const { px, py } = this.tileCenter(player.x, player.y);
       let sprite = this.sprites.get(player.id);
