@@ -1,0 +1,9 @@
+node_modules/
+deploy/
+dist/
+.env
+.env.*
+*.log
+*.pid
+PORTS.md
+README.md
