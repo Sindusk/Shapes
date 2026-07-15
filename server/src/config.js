@@ -1,4 +1,4 @@
-export const GRID_SIZE = 9;
+export const GRID_SIZE = 7;
 export const TICK_RATE = 30; // ticks per second
 export const STARTING_LIVES = 3;
 
@@ -6,15 +6,19 @@ export const STARTING_LIVES = 3;
 // connects before it elapses joins the same match, anyone after is benched
 // until the match concludes.
 export const MATCH_COUNTDOWN_MS = 15000;
-export const MAX_MATCH_LENGTH_MS = 8 * 60 * 1000;
+export const MAX_MATCH_LENGTH_MS = 5 * 60 * 1000;
 
-// Boss cast/channel timing scale with match progress (elapsed / MAX_MATCH_LENGTH_MS):
-// castInterval = lerp(BOSS_CAST_INTERVAL_START, BOSS_CAST_INTERVAL_END, progress^2)
-// channelTime  = lerp(BOSS_CHANNEL_START, BOSS_CHANNEL_END, progress^2)
-export const BOSS_CAST_INTERVAL_START = 7.0;
-export const BOSS_CAST_INTERVAL_END = 2.0;
-export const BOSS_CHANNEL_START = 5.0;
-export const BOSS_CHANNEL_END = 0.5;
+// Boss cast interval and channel time ramp from their START values down to
+// their END values over BOSS_SCALING_RAMP_MS, via a fast ease-out curve
+// (steep early, flattening as it approaches the bound) — not a linear lerp.
+// Once elapsed match time reaches the ramp duration, both sit at their END
+// value for the remainder of the match (until enrage takes over at
+// MAX_MATCH_LENGTH_MS).
+export const BOSS_SCALING_RAMP_MS = 3 * 60 * 1000;
+export const BOSS_CAST_INTERVAL_START = 5.0;
+export const BOSS_CAST_INTERVAL_END = 1.5;
+export const BOSS_CHANNEL_START = 3.0;
+export const BOSS_CHANNEL_END = 0.7;
 
 // Boss tile-count-per-attack is a uniform random fraction of the board; the
 // [min, max] range widens and shifts upward as the match progresses.

@@ -4,6 +4,40 @@ import PhaserGame from './PhaserGame.jsx';
 
 const SIDEBAR_WIDTH = 180;
 
+// Mirrors server/src/config.js boss timing constants — kept in sync manually
+// so this debug readout can animate client-side without extra broadcasts.
+const MAX_MATCH_LENGTH_MS = 5 * 60 * 1000;
+const BOSS_SCALING_RAMP_MS = 3 * 60 * 1000;
+const BOSS_CAST_INTERVAL_START = 5.0;
+const BOSS_CAST_INTERVAL_END = 1.5;
+const BOSS_CHANNEL_START = 3.0;
+const BOSS_CHANNEL_END = 0.7;
+const ENRAGE_CAST_INTERVAL_S = 1.0;
+const ENRAGE_CHANNEL_DURATION_S = 0.5;
+
+function clamp(n, min, max) {
+  return Math.min(max, Math.max(min, n));
+}
+
+// Fast ease-out ramp — mirrors game.js's easeOutCubic, not a linear lerp.
+function easeOutCubic(t) {
+  return 1 - (1 - t) ** 3;
+}
+
+function bossTimings(match, now) {
+  if (match.phase !== 'active' || !match.startedAt) return null;
+  const progress = clamp((now - match.startedAt) / MAX_MATCH_LENGTH_MS, 0, 1);
+  if (match.enraged) {
+    return { castInterval: ENRAGE_CAST_INTERVAL_S, channelTime: ENRAGE_CHANNEL_DURATION_S, progress };
+  }
+  const scaling = easeOutCubic(clamp((now - match.startedAt) / BOSS_SCALING_RAMP_MS, 0, 1));
+  return {
+    castInterval: BOSS_CAST_INTERVAL_START - (BOSS_CAST_INTERVAL_START - BOSS_CAST_INTERVAL_END) * scaling,
+    channelTime: BOSS_CHANNEL_START - (BOSS_CHANNEL_START - BOSS_CHANNEL_END) * scaling,
+    progress,
+  };
+}
+
 function colorToCss(color) {
   return `#${color.toString(16).padStart(6, '0')}`;
 }
@@ -110,6 +144,28 @@ function LivesPanel({ players, myId }) {
   );
 }
 
+function DebugPanel({ match, now }) {
+  const timings = bossTimings(match, now);
+  return (
+    <div style={{ width: SIDEBAR_WIDTH, paddingTop: 24 }}>
+      <h2 style={{ fontSize: 14, color: '#aaa', margin: '0 0 8px', textTransform: 'uppercase' }}>
+        Debug
+      </h2>
+      {timings ? (
+        <div style={{ fontVariantNumeric: 'tabular-nums', lineHeight: 1.6 }}>
+          <div>Cast Interval: {timings.castInterval.toFixed(2)}s</div>
+          <div>Channel Time: {timings.channelTime.toFixed(2)}s</div>
+          <div style={{ color: '#666', fontSize: 12, marginTop: 4 }}>
+            progress: {(timings.progress * 100).toFixed(1)}%
+          </div>
+        </div>
+      ) : (
+        <div style={{ color: '#666' }}>—</div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [status, setStatus] = useState('connecting');
   const [myId, setMyId] = useState(null);
@@ -183,7 +239,7 @@ export default function App() {
       <div style={{ display: 'grid', gridTemplateColumns: `${SIDEBAR_WIDTH}px auto ${SIDEBAR_WIDTH}px`, gap: 16 }}>
         <LivesPanel players={players} myId={myId} />
         <PhaserGame />
-        <div />
+        <DebugPanel match={match} now={now} />
       </div>
     </div>
   );

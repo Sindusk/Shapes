@@ -3,6 +3,7 @@ import {
   STARTING_LIVES,
   MATCH_COUNTDOWN_MS,
   MAX_MATCH_LENGTH_MS,
+  BOSS_SCALING_RAMP_MS,
   BOSS_CAST_INTERVAL_START,
   BOSS_CAST_INTERVAL_END,
   BOSS_CHANNEL_START,
@@ -28,12 +29,15 @@ const DIRECTIONS = {
 
 const TOTAL_TILES = GRID_SIZE * GRID_SIZE;
 
-function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-
 function clamp(n, min, max) {
   return Math.min(max, Math.max(min, n));
+}
+
+/** Fast ease-out: steep early ramp that flattens as it nears 1, reaching
+ * exactly 1 at t=1. Used instead of a linear/lerp ramp so difficulty climbs
+ * quickly rather than crawling up over the whole match. */
+function easeOutCubic(t) {
+  return 1 - (1 - t) ** 3;
 }
 
 export class Game {
@@ -153,11 +157,19 @@ export class Game {
     return !!this.match.startedAt && now - this.match.startedAt >= MAX_MATCH_LENGTH_MS;
   }
 
+  /** 0 at match start, 1 once BOSS_SCALING_RAMP_MS has elapsed (then holds
+   * at 1 for the rest of the match, until enrage). */
+  scalingFactor(now) {
+    if (!this.match.startedAt) return 0;
+    const t = clamp((now - this.match.startedAt) / BOSS_SCALING_RAMP_MS, 0, 1);
+    return easeOutCubic(t);
+  }
+
   /** Random tile count for one attack: a uniform roll inside a [min, max]
    * fraction-of-board range that widens and shifts upward with progress. */
   rollTileCount(progress) {
-    const minFraction = lerp(BOSS_TILE_MIN_FRACTION_START, BOSS_TILE_MIN_FRACTION_END, progress);
-    const maxFraction = lerp(BOSS_TILE_MAX_FRACTION_START, BOSS_TILE_MAX_FRACTION_END, progress);
+    const minFraction = BOSS_TILE_MIN_FRACTION_START + (BOSS_TILE_MIN_FRACTION_END - BOSS_TILE_MIN_FRACTION_START) * progress;
+    const maxFraction = BOSS_TILE_MAX_FRACTION_START + (BOSS_TILE_MAX_FRACTION_END - BOSS_TILE_MAX_FRACTION_START) * progress;
     const fraction = minFraction + Math.random() * (maxFraction - minFraction);
     return clamp(Math.round(TOTAL_TILES * fraction), 1, TOTAL_TILES);
   }
@@ -170,16 +182,16 @@ export class Game {
    */
   startChannel(now) {
     const enraged = this.isEnraged(now);
-    const progress = this.matchProgress(now);
     this.boss.enraged = enraged;
 
-    const tileCount = enraged ? TOTAL_TILES : this.rollTileCount(progress);
+    const tileCount = enraged ? TOTAL_TILES : this.rollTileCount(this.matchProgress(now));
+    const scaling = this.scalingFactor(now);
     const channelDurationMs = enraged
       ? ENRAGE_CHANNEL_DURATION_MS
-      : lerp(BOSS_CHANNEL_START, BOSS_CHANNEL_END, progress ** 2) * 1000;
+      : (BOSS_CHANNEL_START - (BOSS_CHANNEL_START - BOSS_CHANNEL_END) * scaling) * 1000;
     const castIntervalMs = enraged
       ? ENRAGE_CAST_INTERVAL_MS
-      : lerp(BOSS_CAST_INTERVAL_START, BOSS_CAST_INTERVAL_END, progress ** 2) * 1000;
+      : (BOSS_CAST_INTERVAL_START - (BOSS_CAST_INTERVAL_START - BOSS_CAST_INTERVAL_END) * scaling) * 1000;
 
     this.boss.state = 'channeling';
     this.boss.tiles = this.pickGlowTiles(tileCount);

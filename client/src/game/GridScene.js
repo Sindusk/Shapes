@@ -1,9 +1,9 @@
 import Phaser from 'phaser';
 import { socket } from '../socket.js';
 
-const GRID_SIZE = 9;
-const TILE = 48;
-const GAP = 3;
+const GRID_SIZE = 7;
+const TILE = 60;
+const GAP = 4;
 const BOARD = GRID_SIZE * TILE + (GRID_SIZE - 1) * GAP;
 const MOVE_COOLDOWN_MS = 150; // client-side throttle; the server still validates every move
 const BOSS_ZONE_HEIGHT = 120; // reserved space above the grid for the boss + cast bar
@@ -143,8 +143,9 @@ export default class GridScene extends Phaser.Scene {
     this.castBarFill.fillStyle(0xe74c3c, 1);
     this.castBarFill.fillRoundedRect(x, y, width * progress, height, 4);
 
-    // Very light, slow blink.
-    const blinkAlpha = 0.1 + 0.05 * Math.sin(now / 450);
+    // Very light, slow blink (lower bound raised ~halfway to the upper
+    // bound so it doesn't blend into the board background).
+    const blinkAlpha = 0.125 + 0.025 * Math.sin(now / 450);
     for (const g of this.glowTiles) g.setAlpha(blinkAlpha);
   }
 
