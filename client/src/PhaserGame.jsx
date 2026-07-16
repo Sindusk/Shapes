@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
-import GridScene from './game/GridScene.js';
+import GridScene, { CANVAS_WIDTH, CANVAS_HEIGHT } from './game/GridScene.js';
 
 export default function PhaserGame() {
   const containerRef = useRef(null);
@@ -12,9 +12,11 @@ export default function PhaserGame() {
     gameRef.current = new Phaser.Game({
       type: Phaser.AUTO,
       parent: containerRef.current,
-      width: 470,
-      height: 580,
-      backgroundColor: '#16213e',
+      width: CANVAS_WIDTH,
+      height: CANVAS_HEIGHT,
+      // Matches index.html's body background so the canvas has no visible
+      // edge against the page.
+      backgroundColor: '#1a1a2e',
       scene: [GridScene],
     });
 

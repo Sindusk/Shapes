@@ -7,6 +7,14 @@ const GAP = 4;
 const BOARD = GRID_SIZE * TILE + (GRID_SIZE - 1) * GAP;
 const MOVE_COOLDOWN_MS = 150; // client-side throttle; the server still validates every move
 const BOSS_ZONE_HEIGHT = 160; // reserved space above the grid for the boss + stacked cast bars (attacks can overlap)
+const SIDE_MARGIN = 26; // total horizontal breathing room around the board
+const BOTTOM_MARGIN = 16;
+
+// Exported so PhaserGame.jsx can size the canvas to exactly fit the board —
+// keeping these in one place after BOSS_ZONE_HEIGHT grew (for stacked cast
+// bars) let the canvas cut the board off at the bottom.
+export const CANVAS_WIDTH = BOARD + SIDE_MARGIN;
+export const CANVAS_HEIGHT = BOSS_ZONE_HEIGHT + BOARD + BOTTOM_MARGIN;
 
 // Rotation (radians) applied so the top of each shape faces the player's
 // last-moved direction. Shapes are drawn pointing up by default (facing 'up' = 0).
