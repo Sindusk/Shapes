@@ -20,12 +20,10 @@ export const BOSS_CAST_INTERVAL_END = 1.5;
 export const BOSS_CHANNEL_START = 3.0;
 export const BOSS_CHANNEL_END = 0.7;
 
-// Boss tile-count-per-attack is a uniform random fraction of the board; the
-// [min, max] range widens and shifts upward as the match progresses.
-export const BOSS_TILE_MIN_FRACTION_START = 1 / 4;
-export const BOSS_TILE_MAX_FRACTION_START = 1 / 2;
-export const BOSS_TILE_MIN_FRACTION_END = 3 / 4;
-export const BOSS_TILE_MAX_FRACTION_END = 7 / 8;
+// Attack patterns (see patterns.js). The Meteor pattern fires this many
+// volleys of random 3x3 impact zones, one volley per half-channel step.
+export const METEOR_IMPACTS_PER_VOLLEY = 3;
+export const METEOR_VOLLEYS = 2;
 
 // Past MAX_MATCH_LENGTH_MS the boss enrages: every attack hits the whole
 // board, and the match is forced to end after this many enraged attacks.

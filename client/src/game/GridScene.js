@@ -20,8 +20,13 @@ export default class GridScene extends Phaser.Scene {
     this.sprites = new Map(); // player id -> { container, ring, radius }
     this.playerData = new Map(); // player id -> latest snapshot player object
     this.lastMoveAt = 0;
-    this.glowTiles = []; // graphics for currently-highlighted boss tiles
-    this.boss = { state: 'idle', tiles: [], enraged: false, channelStartAt: 0, channelEndAt: 0 };
+    // One entry per pending boss wave: { warnAt, resolveAt, graphics: [] }.
+    // Graphics are created on broadcast but shown/hidden per frame from the
+    // wave's own timestamps, so follow-up warnings appear on schedule
+    // without needing another broadcast.
+    this.waveGlow = [];
+    this.boss = { state: 'idle', name: null, waves: [], enraged: false, channelStartAt: 0, channelEndAt: 0 };
+    this.eggSprite = null;
     this.clockOffset = 0; // serverTime - Date.now(), so we can animate off server timestamps
   }
 
@@ -131,23 +136,38 @@ export default class GridScene extends Phaser.Scene {
     this.castBarFill = this.add.graphics();
     this.castBarFill.setVisible(false);
     this.castBar = { x: barX, y: barY, width: barWidth, height: barHeight };
+
+    // Attack name, shown above the cast bar while the boss is casting.
+    this.castNameText = this.add
+      .text(centerX, barY - 10, '', {
+        fontFamily: 'sans-serif',
+        fontSize: '16px',
+        fontStyle: 'bold',
+        color: '#ffffff',
+        stroke: '#000000',
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5, 1)
+      .setVisible(false);
   }
 
-  /** Called only when a 'state'/'welcome' event arrives — rebuilds the glow
-   * tile set on channel start/end. Continuous animation (bar fill, blink)
-   * happens every frame in renderBossFrame(), off the timestamps here, so
-   * the visuals don't stall between broadcasts. */
+  /** Called only when a 'state'/'welcome' event arrives — rebuilds the
+   * per-wave glow graphics (resolved waves are pruned server-side, so their
+   * tiles vanish on the resolve broadcast). Continuous animation (bar fill,
+   * warning visibility, blink) happens every frame in renderBossFrame(),
+   * off the timestamps here, so the visuals don't stall between
+   * broadcasts. */
   updateBoss(boss) {
     this.boss = boss;
-    const channeling = boss.state === 'channeling';
-    this.castBarBg.setVisible(channeling);
-    this.castBarFill.setVisible(channeling);
 
-    for (const g of this.glowTiles) g.destroy();
-    this.glowTiles = [];
+    for (const wave of this.waveGlow) {
+      for (const g of wave.graphics) g.destroy();
+    }
+    this.waveGlow = [];
 
-    if (channeling) {
-      for (const tile of boss.tiles) {
+    for (const wave of boss.waves ?? []) {
+      const graphics = [];
+      for (const tile of wave.tiles) {
         const g = this.add.graphics();
         g.fillStyle(0xffffff, 1);
         g.fillRoundedRect(
@@ -158,27 +178,49 @@ export default class GridScene extends Phaser.Scene {
           8
         );
         g.setDepth(0.5);
-        this.glowTiles.push(g);
+        g.setVisible(false);
+        graphics.push(g);
       }
+      this.waveGlow.push({ warnAt: wave.warnAt, resolveAt: wave.resolveAt, graphics });
     }
+
+    this.castNameText.setText(boss.name ?? '');
   }
 
-  /** Runs every render frame; animates the cast bar and glow-tile blink
-   * from the boss's absolute channelStartAt/channelEndAt timestamps. */
+  /** Runs every render frame; animates the cast bar, attack name, and each
+   * wave's warning glow from the boss's absolute timestamps. Follow-up
+   * waves become visible only once their own warnAt arrives. */
   renderBossFrame(now) {
-    if (this.boss.state !== 'channeling') return;
+    const attacking = this.boss.state === 'attacking';
 
-    const { x, y, width, height } = this.castBar;
-    const span = this.boss.channelEndAt - this.boss.channelStartAt;
-    const progress = span > 0 ? Phaser.Math.Clamp((now - this.boss.channelStartAt) / span, 0, 1) : 1;
-    this.castBarFill.clear();
-    this.castBarFill.fillStyle(0xe74c3c, 1);
-    this.castBarFill.fillRoundedRect(x, y, width * progress, height, 4);
+    // The cast bar spans only the first wave's channel; later waves of the
+    // same attack keep their glow warnings but the bar has finished.
+    const casting = attacking && now < this.boss.channelEndAt;
+    this.castBarBg.setVisible(casting);
+    this.castBarFill.setVisible(casting);
+    this.castNameText.setVisible(casting);
+
+    if (casting) {
+      const { x, y, width, height } = this.castBar;
+      const span = this.boss.channelEndAt - this.boss.channelStartAt;
+      const progress = span > 0 ? Phaser.Math.Clamp((now - this.boss.channelStartAt) / span, 0, 1) : 1;
+      this.castBarFill.clear();
+      this.castBarFill.fillStyle(0xe74c3c, 1);
+      this.castBarFill.fillRoundedRect(x, y, width * progress, height, 4);
+    }
+
+    if (!attacking) return;
 
     // Very light, slow blink (lower bound raised ~halfway to the upper
     // bound so it doesn't blend into the board background).
     const blinkAlpha = 0.125 + 0.025 * Math.sin(now / 450);
-    for (const g of this.glowTiles) g.setAlpha(blinkAlpha);
+    for (const wave of this.waveGlow) {
+      const active = now >= wave.warnAt && now < wave.resolveAt;
+      for (const g of wave.graphics) {
+        g.setVisible(active);
+        if (active) g.setAlpha(blinkAlpha);
+      }
+    }
   }
 
   drawGrid() {
@@ -248,6 +290,36 @@ export default class GridScene extends Phaser.Scene {
     }
 
     if (state.boss) this.updateBoss(state.boss);
+    this.updateEgg(state.egg ?? null);
+  }
+
+  /** Creates/moves/removes the egg sprite to match the snapshot. Pushes
+   * animate with the same short tween as player movement. */
+  updateEgg(egg) {
+    if (!egg) {
+      if (this.eggSprite) {
+        this.eggSprite.destroy();
+        this.eggSprite = null;
+      }
+      return;
+    }
+
+    const { px, py } = this.tileCenter(egg.x, egg.y);
+    if (!this.eggSprite) {
+      const g = this.add.graphics();
+      g.fillStyle(0xfff3d6, 1);
+      g.fillEllipse(0, 2, TILE * 0.42, TILE * 0.56);
+      g.lineStyle(2, 0xd4b483, 1);
+      g.strokeEllipse(0, 2, TILE * 0.42, TILE * 0.56);
+      g.fillStyle(0xd4b483, 0.5); // speckles
+      g.fillCircle(-4, -4, 2);
+      g.fillCircle(5, 3, 2);
+      g.fillCircle(-2, 8, 1.5);
+      this.eggSprite = this.add.container(px, py, [g]);
+      this.eggSprite.setDepth(1);
+    } else if (this.eggSprite.x !== px || this.eggSprite.y !== py) {
+      this.tweens.add({ targets: this.eggSprite, x: px, y: py, duration: 100, ease: 'Power2' });
+    }
   }
 
   /** Runs every render frame; updates the invulnerability ring color/pulse

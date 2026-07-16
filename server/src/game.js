@@ -8,10 +8,6 @@ import {
   BOSS_CAST_INTERVAL_END,
   BOSS_CHANNEL_START,
   BOSS_CHANNEL_END,
-  BOSS_TILE_MIN_FRACTION_START,
-  BOSS_TILE_MAX_FRACTION_START,
-  BOSS_TILE_MIN_FRACTION_END,
-  BOSS_TILE_MAX_FRACTION_END,
   ENRAGE_CAST_INTERVAL_MS,
   ENRAGE_CHANNEL_DURATION_MS,
   ENRAGE_ATTACKS_TO_END_MATCH,
@@ -23,6 +19,7 @@ import {
   DASH_TILES,
   INVULN_DURATION_MS,
 } from './config.js';
+import { buildAttack, allTiles } from './patterns.js';
 
 const SHAPES = ['circle', 'square', 'triangle', 'diamond', 'pentagon', 'star'];
 const COLORS = [0xe74c3c, 0x3498db, 0x2ecc71, 0xf1c40f, 0x9b59b6, 0xe67e22, 0x1abc9c, 0xfd79a8];
@@ -33,8 +30,6 @@ const DIRECTIONS = {
   left: { dx: -1, dy: 0 },
   right: { dx: 1, dy: 0 },
 };
-
-const TOTAL_TILES = GRID_SIZE * GRID_SIZE;
 
 const ABILITY_COOLDOWNS = {
   1: ABILITY_DAMAGE_COOLDOWN_MS,
@@ -64,11 +59,26 @@ export class Game {
     this.players = new Map();
     this.dirty = false; // set only on real state changes; the loop broadcasts on dirty ticks
 
-    // channelStartAt/channelEndAt are absolute timestamps so the client can
-    // animate the cast bar and glow-tile blink itself, without needing a
-    // broadcast every tick.
-    this.boss = { state: 'idle', tiles: [], enraged: false, channelStartAt: 0, channelEndAt: 0 };
+    // An attack is a named pattern made of one or more "waves", each with
+    // absolute warnAt/resolveAt timestamps (see patterns.js) — the client
+    // animates warnings, cast bar, and blink entirely from these, without
+    // needing a broadcast every tick. Waves are pruned from the array as
+    // they resolve. channelStartAt/channelEndAt span the first wave's
+    // channel and drive the cast bar.
+    this.boss = {
+      state: 'idle', // 'idle' | 'attacking'
+      name: null,
+      waves: [],
+      enraged: false,
+      channelStartAt: 0,
+      channelEndAt: 0,
+    };
     this.nextChannelAt = 0;
+    this.lastAttackName = null;
+
+    // The egg: a pushable NPC that spawns at match start. If a boss wave
+    // hits its tile, every living player loses a life.
+    this.egg = null; // {x, y} | null
 
     // phase: 'waiting' (no active match, boss paused) | 'countdown' (match
     // forming) | 'active' (rounds happening)
@@ -89,11 +99,15 @@ export class Game {
     return false;
   }
 
+  isEggAt(x, y) {
+    return !!this.egg && this.egg.x === x && this.egg.y === y;
+  }
+
   findFreeTile() {
     const free = [];
     for (let y = 0; y < GRID_SIZE; y++) {
       for (let x = 0; x < GRID_SIZE; x++) {
-        if (!this.isOccupied(x, y)) free.push({ x, y });
+        if (!this.isOccupied(x, y) && !this.isEggAt(x, y)) free.push({ x, y });
       }
     }
     if (free.length === 0) return null;
@@ -155,6 +169,22 @@ export class Game {
     if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) return false;
     if (this.isOccupied(nx, ny)) return false;
 
+    if (this.isEggAt(nx, ny)) {
+      // Moving into the egg pushes it one tile further along; if that tile
+      // is a wall or another player, the egg swaps places with the mover.
+      const ex = nx + dir.dx;
+      const ey = ny + dir.dy;
+      const pushBlocked =
+        ex < 0 || ex >= GRID_SIZE || ey < 0 || ey >= GRID_SIZE || this.isOccupied(ex, ey);
+      if (pushBlocked) {
+        this.egg.x = player.x;
+        this.egg.y = player.y;
+      } else {
+        this.egg.x = ex;
+        this.egg.y = ey;
+      }
+    }
+
     player.x = nx;
     player.y = ny;
     this.dirty = true;
@@ -209,7 +239,7 @@ export class Game {
       const inBounds = nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE;
       const key = `${nx},${ny}`;
 
-      if (!inBounds || claimed.has(key)) {
+      if (!inBounds || claimed.has(key) || this.isEggAt(nx, ny)) {
         p.stunnedUntil = now + PUSHBACK_STUN_MS;
         continue;
       }
@@ -233,22 +263,10 @@ export class Game {
       const nx = caster.x + dir.dx;
       const ny = caster.y + dir.dy;
       if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) break;
-      if (this.isOccupied(nx, ny)) break;
+      if (this.isOccupied(nx, ny) || this.isEggAt(nx, ny)) break;
       caster.x = nx;
       caster.y = ny;
     }
-  }
-
-  pickGlowTiles(count) {
-    const all = [];
-    for (let y = 0; y < GRID_SIZE; y++) {
-      for (let x = 0; x < GRID_SIZE; x++) all.push({ x, y });
-    }
-    for (let i = all.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [all[i], all[j]] = [all[j], all[i]];
-    }
-    return all.slice(0, count);
   }
 
   matchProgress(now) {
@@ -268,26 +286,18 @@ export class Game {
     return easeOutCubic(t);
   }
 
-  /** Random tile count for one attack: a uniform roll inside a [min, max]
-   * fraction-of-board range that widens and shifts upward with progress. */
-  rollTileCount(progress) {
-    const minFraction = BOSS_TILE_MIN_FRACTION_START + (BOSS_TILE_MIN_FRACTION_END - BOSS_TILE_MIN_FRACTION_START) * progress;
-    const maxFraction = BOSS_TILE_MAX_FRACTION_START + (BOSS_TILE_MAX_FRACTION_END - BOSS_TILE_MAX_FRACTION_START) * progress;
-    const fraction = minFraction + Math.random() * (maxFraction - minFraction);
-    return clamp(Math.round(TOTAL_TILES * fraction), 1, TOTAL_TILES);
-  }
-
   /**
-   * Starts a channel. Cast interval and channel duration are computed
-   * independently from the match progress at this moment: the next cast is
-   * scheduled `castInterval` after *this* cast's start, regardless of how
-   * long this channel takes to resolve.
+   * Starts an attack (a named pattern of one or more waves). Cast interval
+   * and channel duration are computed from the match progress at this
+   * moment: the next cast is scheduled `castInterval` after *this* cast's
+   * start, regardless of how long this attack takes to fully resolve —
+   * though a new attack never begins while a previous one still has waves
+   * pending.
    */
-  startChannel(now) {
+  startAttack(now) {
     const enraged = this.isEnraged(now);
     this.boss.enraged = enraged;
 
-    const tileCount = enraged ? TOTAL_TILES : this.rollTileCount(this.matchProgress(now));
     const scaling = this.scalingFactor(now);
     const channelDurationMs = enraged
       ? ENRAGE_CHANNEL_DURATION_MS
@@ -296,38 +306,73 @@ export class Game {
       ? ENRAGE_CAST_INTERVAL_MS
       : (BOSS_CAST_INTERVAL_START - (BOSS_CAST_INTERVAL_START - BOSS_CAST_INTERVAL_END) * scaling) * 1000;
 
-    this.boss.state = 'channeling';
-    this.boss.tiles = this.pickGlowTiles(tileCount);
+    if (enraged) {
+      this.boss.name = 'Enrage';
+      this.boss.waves = [
+        { tiles: allTiles(), warnAt: now, resolveAt: now + channelDurationMs },
+      ];
+    } else {
+      const alive = [...this.players.values()].filter((p) => !p.eliminated && !p.benched);
+      const attack = buildAttack(now, channelDurationMs, {
+        players: alive,
+        excludeName: this.lastAttackName,
+      });
+      this.boss.name = attack.name;
+      this.boss.waves = attack.waves;
+      this.lastAttackName = attack.name;
+    }
+
+    this.boss.state = 'attacking';
     this.boss.channelStartAt = now;
-    this.boss.channelEndAt = now + channelDurationMs;
+    this.boss.channelEndAt = this.boss.waves[0]?.resolveAt ?? now + channelDurationMs;
     this.nextChannelAt = now + castIntervalMs;
     this.dirty = true;
   }
 
-  resolveChannel(now) {
+  /** Resolves every wave whose time has come (waves are sorted by
+   * resolveAt); once the last wave of the attack resolves, the round
+   * advances and the boss returns to idle. */
+  resolveWaves(now) {
+    let resolvedAny = false;
+    while (this.boss.waves.length > 0 && now >= this.boss.waves[0].resolveAt) {
+      this.applyWaveDamage(this.boss.waves.shift(), now);
+      resolvedAny = true;
+    }
+    if (!resolvedAny) return;
+
+    if (this.boss.waves.length === 0) {
+      this.match.round += 1;
+      if (this.boss.enraged) this.match.enrageAttacks += 1;
+      this.boss.state = 'idle';
+      this.boss.name = null;
+      // nextChannelAt was already scheduled in startAttack, independent of
+      // attack duration; if it has already passed (attack ran long), the
+      // idle branch in update() fires the next cast on the very next tick.
+    }
+
+    this.dirty = true;
+    this.checkMatchEnd(now);
+  }
+
+  applyWaveDamage(wave, now) {
+    const hit = new Set(wave.tiles.map((t) => `${t.x},${t.y}`));
+
+    // The egg takes the hit for everyone: if a wave lands on it, every
+    // living player loses a life (individual invulnerability still helps).
+    const eggHit = !!this.egg && hit.has(`${this.egg.x},${this.egg.y}`);
+
     for (const player of this.players.values()) {
       if (player.eliminated || player.benched) continue;
-      const hit = this.boss.tiles.some((t) => t.x === player.x && t.y === player.y);
-      if (!hit) continue;
-      if (player.invulnerableUntil > now) continue;
-      player.lives -= 1;
+      let damage = 0;
+      if (hit.has(`${player.x},${player.y}`)) damage += 1;
+      if (eggHit) damage += 1;
+      if (damage === 0 || player.invulnerableUntil > now) continue;
+      player.lives -= damage;
       if (player.lives <= 0) {
         player.lives = 0;
         this.eliminate(player, now);
       }
     }
-
-    this.match.round += 1;
-    if (this.boss.enraged) this.match.enrageAttacks += 1;
-
-    this.boss.state = 'idle';
-    this.boss.tiles = [];
-    this.dirty = true;
-
-    // nextChannelAt was already scheduled in startChannel, independent of
-    // channel duration; if it has already passed (channel ran long), the
-    // idle branch in update() will fire the next cast on the very next tick.
-    this.checkMatchEnd(now);
   }
 
   eliminate(player, now) {
@@ -357,8 +402,11 @@ export class Game {
 
   endMatch(now) {
     this.boss.state = 'idle';
-    this.boss.tiles = [];
+    this.boss.name = null;
+    this.boss.waves = [];
     this.boss.enraged = false;
+    this.lastAttackName = null;
+    this.egg = null;
     this.match.round = 0;
     this.match.enrageAttacks = 0;
     this.match.startedAt = null;
@@ -402,6 +450,7 @@ export class Game {
     this.boss.state = 'idle';
     this.boss.enraged = false;
     this.nextChannelAt = now + BOSS_CAST_INTERVAL_START * 1000;
+    this.egg = this.findFreeTile(); // the egg spawns on a free tile at match start
     this.dirty = true;
   }
 
@@ -419,7 +468,10 @@ export class Game {
         this.match.countdownEndAt = null;
         this.match.startedAt = null;
         this.boss.state = 'idle';
-        this.boss.tiles = [];
+        this.boss.name = null;
+        this.boss.waves = [];
+        this.lastAttackName = null;
+        this.egg = null;
         this.dirty = true;
       }
       return;
@@ -434,11 +486,11 @@ export class Game {
 
     // active
     if (this.boss.state === 'idle') {
-      if (now >= this.nextChannelAt) this.startChannel(now);
+      if (now >= this.nextChannelAt) this.startAttack(now);
       return;
     }
 
-    if (now >= this.boss.channelEndAt) this.resolveChannel(now);
+    this.resolveWaves(now);
   }
 
   snapshot() {
@@ -447,6 +499,7 @@ export class Game {
       serverTime: Date.now(),
       players: [...this.players.values()],
       boss: this.boss,
+      egg: this.egg,
       match: this.match,
     };
   }

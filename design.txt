@@ -71,3 +71,23 @@ Add an ability bar for every player, bound to keys 1, 2, 3, 4. There will be pre
 - The third ability, bound to key 3, will be a dash. It will move the player 3 tiles forward in their current facing direction. If they would hit a wall with this dash, it puts them at the wall. This will have a 10 second cooldown.
 - The fourth ability, bound to key 4, will be an invulnerability. It will negate the effects of getting hit by a bad tile. The invulnerability lasts for 2 seconds. The cooldown will be 45 seconds. Indicate the invulnerability by turning the ring around them golden instead of white for the duration.
 Begin adding authentication with the users database and replacing "Player X" with their username if they're logged in. Add a burger menu to the top left of the screen with a single option "Login" if they need to login, or "Logout" if they need to logout. At the top of the burger menu it should display their username and role if they are logged in.
+
+--- Development Phase 5 ---
+
+Add the concept of boss attack patterns. We'll swap away from random tiles being attacked into preset patterns, each one named on the cast bar as it's cast:
+- Beam: Which causes lines that sweep tiles from one side of the arena to another. The last row on a side should remain safe.
+- Ring: An outer ring which sweeps inward. Corners are safe for the entire mechanic. Single tile in the center is also safe for the entire duration of the mechanic.
+- Cone: A cone from a cardinal direction which hits across the screen, corners to either side would be safe.
+- Earthquake: Linear attack which is slow moving, and sends out residual attacks to the side of it as it travels.
+- Defamation: Each player has a ring around them as the harmful area.
+- Checkerboard: Checkerboard pattern, which then swaps to the inverse causing players to be forced to move diagonally in order to dodge the second set.
+Additional attack patterns (Claude's additions, implemented alongside the above):
+- Cross: A full row and column through a random pivot tile (a plus shape), followed by both diagonals through the same pivot (an X). Standing on the pivot's diagonals dodges the first hit but not the second.
+- Vice: Two walls sweep inward from opposite sides simultaneously, meeting at the center line last. Players survive by stepping into lines that have already resolved.
+- Meteor: A volley of three random 3x3 impact zones, followed by a second volley at new random locations as the follow-up.
+Warnings for the "follow-up" attack pattern on each of these would be delayed by half the current channel time.
+Add the concept of the "egg", a special non-player character that spawns on a tile at match start.
+- When a player moves into the egg, it pushes it to the next tile over.
+- If that tile is occupied by a player, or a wall, then it swaps places with the player instead.
+- If the egg is hit by a boss ability, every player in the match loses a life.
+

@@ -350,6 +350,7 @@ function DebugPanel({ match, now }) {
         <div style={{ fontVariantNumeric: 'tabular-nums', lineHeight: 1.6 }}>
           <div>Cast Interval: {timings.castInterval.toFixed(2)}s</div>
           <div>Channel Time: {timings.channelTime.toFixed(2)}s</div>
+          <div>Attack: {match.attackName ?? '—'}</div>
           <div style={{ color: '#666', fontSize: 12, marginTop: 4 }}>
             progress: {(timings.progress * 100).toFixed(1)}%
           </div>
@@ -386,7 +387,11 @@ export default function App() {
     const applySnapshot = (state) => {
       if (typeof state.serverTime === 'number') clockOffsetRef.current = state.serverTime - Date.now();
       setPlayers(state.players);
-      setMatch({ ...state.match, enraged: state.boss?.enraged ?? false });
+      setMatch({
+        ...state.match,
+        enraged: state.boss?.enraged ?? false,
+        attackName: state.boss?.name ?? null,
+      });
     };
     const onWelcome = ({ id, state }) => {
       setMyId(id);
