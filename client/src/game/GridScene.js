@@ -6,7 +6,7 @@ const TILE = 60;
 const GAP = 4;
 const BOARD = GRID_SIZE * TILE + (GRID_SIZE - 1) * GAP;
 const MOVE_COOLDOWN_MS = 150; // client-side throttle; the server still validates every move
-const BOSS_ZONE_HEIGHT = 120; // reserved space above the grid for the boss + cast bar
+const BOSS_ZONE_HEIGHT = 160; // reserved space above the grid for the boss + stacked cast bars (attacks can overlap)
 
 // Rotation (radians) applied so the top of each shape faces the player's
 // last-moved direction. Shapes are drawn pointing up by default (facing 'up' = 0).
@@ -20,12 +20,17 @@ export default class GridScene extends Phaser.Scene {
     this.sprites = new Map(); // player id -> { container, ring, radius }
     this.playerData = new Map(); // player id -> latest snapshot player object
     this.lastMoveAt = 0;
-    // One entry per pending boss wave: { warnAt, resolveAt, graphics: [] }.
-    // Graphics are created on broadcast but shown/hidden per frame from the
-    // wave's own timestamps, so follow-up warnings appear on schedule
-    // without needing another broadcast.
+    // One entry per pending boss wave (flattened across every concurrent
+    // attack): { warnAt, resolveAt, graphics: [] }. Graphics are created on
+    // broadcast but shown/hidden per frame from the wave's own timestamps,
+    // so follow-up warnings appear on schedule without needing another
+    // broadcast.
     this.waveGlow = [];
-    this.boss = { state: 'idle', name: null, waves: [], enraged: false, channelStartAt: 0, channelEndAt: 0 };
+    // One entry per concurrent attack's cast bar: { name, channelStartAt,
+    // channelEndAt, bg, fill, text }. Attacks can overlap, so more than one
+    // bar can be visible at once, stacked vertically.
+    this.attackBars = [];
+    this.boss = { state: 'idle', attacks: [], enraged: false };
     this.eggSprite = null;
     this.clockOffset = 0; // serverTime - Date.now(), so we can animate off server timestamps
   }
@@ -123,23 +128,25 @@ export default class GridScene extends Phaser.Scene {
     g.lineStyle(2, 0xffffff, 0.6);
     g.strokeTriangle(centerX, bossY - 26, centerX - 30, bossY + 20, centerX + 30, bossY + 20);
 
-    const barWidth = BOARD;
-    const barHeight = 12;
-    const barX = this.originX;
-    const barY = 70;
+    // Bar geometry; actual bar/text objects are created per concurrent
+    // attack in updateBoss() since more than one can be casting at once.
+    this.castBarGeometry = { x: this.originX, y: 70, width: BOARD, height: 12, spacing: 26 };
+  }
 
-    this.castBarBg = this.add.graphics();
-    this.castBarBg.fillStyle(0x1a1a2e, 1);
-    this.castBarBg.fillRoundedRect(barX, barY, barWidth, barHeight, 4);
-    this.castBarBg.setVisible(false);
+  /** Creates one cast bar + name label, stacked below the previous one by
+   * `spacing` px so overlapping attacks each get their own row. */
+  createAttackBar(index) {
+    const { x, y, width, height, spacing } = this.castBarGeometry;
+    const barY = y + index * spacing;
 
-    this.castBarFill = this.add.graphics();
-    this.castBarFill.setVisible(false);
-    this.castBar = { x: barX, y: barY, width: barWidth, height: barHeight };
+    const bg = this.add.graphics();
+    bg.fillStyle(0x1a1a2e, 1);
+    bg.fillRoundedRect(x, barY, width, height, 4);
 
-    // Attack name, shown above the cast bar while the boss is casting.
-    this.castNameText = this.add
-      .text(centerX, barY - 10, '', {
+    const fill = this.add.graphics();
+
+    const text = this.add
+      .text(x + width / 2, barY - 10, '', {
         fontFamily: 'sans-serif',
         fontSize: '16px',
         fontStyle: 'bold',
@@ -147,69 +154,80 @@ export default class GridScene extends Phaser.Scene {
         stroke: '#000000',
         strokeThickness: 3,
       })
-      .setOrigin(0.5, 1)
-      .setVisible(false);
+      .setOrigin(0.5, 1);
+
+    return { x, y: barY, width, height, bg, fill, text };
   }
 
   /** Called only when a 'state'/'welcome' event arrives — rebuilds the
    * per-wave glow graphics (resolved waves are pruned server-side, so their
-   * tiles vanish on the resolve broadcast). Continuous animation (bar fill,
-   * warning visibility, blink) happens every frame in renderBossFrame(),
-   * off the timestamps here, so the visuals don't stall between
-   * broadcasts. */
+   * tiles vanish on the resolve broadcast) and the per-attack cast bars.
+   * Continuous animation (bar fill, warning visibility, blink) happens
+   * every frame in renderBossFrame(), off the timestamps here, so the
+   * visuals don't stall between broadcasts. */
   updateBoss(boss) {
     this.boss = boss;
+    const attacks = boss.attacks ?? [];
 
     for (const wave of this.waveGlow) {
       for (const g of wave.graphics) g.destroy();
     }
     this.waveGlow = [];
 
-    for (const wave of boss.waves ?? []) {
-      const graphics = [];
-      for (const tile of wave.tiles) {
-        const g = this.add.graphics();
-        g.fillStyle(0xffffff, 1);
-        g.fillRoundedRect(
-          this.originX + tile.x * (TILE + GAP),
-          this.originY + tile.y * (TILE + GAP),
-          TILE,
-          TILE,
-          8
-        );
-        g.setDepth(0.5);
-        g.setVisible(false);
-        graphics.push(g);
+    for (const attack of attacks) {
+      for (const wave of attack.waves) {
+        const graphics = [];
+        for (const tile of wave.tiles) {
+          const g = this.add.graphics();
+          g.fillStyle(0xffffff, 1);
+          g.fillRoundedRect(
+            this.originX + tile.x * (TILE + GAP),
+            this.originY + tile.y * (TILE + GAP),
+            TILE,
+            TILE,
+            8
+          );
+          g.setDepth(0.5);
+          g.setVisible(false);
+          graphics.push(g);
+        }
+        this.waveGlow.push({ warnAt: wave.warnAt, resolveAt: wave.resolveAt, graphics });
       }
-      this.waveGlow.push({ warnAt: wave.warnAt, resolveAt: wave.resolveAt, graphics });
     }
 
-    this.castNameText.setText(boss.name ?? '');
+    for (const bar of this.attackBars) {
+      bar.bg.destroy();
+      bar.fill.destroy();
+      bar.text.destroy();
+    }
+    this.attackBars = attacks.map((attack, i) => {
+      const bar = this.createAttackBar(i);
+      bar.text.setText(attack.name);
+      return { ...bar, channelStartAt: attack.channelStartAt, channelEndAt: attack.channelEndAt };
+    });
   }
 
-  /** Runs every render frame; animates the cast bar, attack name, and each
-   * wave's warning glow from the boss's absolute timestamps. Follow-up
-   * waves become visible only once their own warnAt arrives. */
+  /** Runs every render frame; animates each concurrent attack's cast bar
+   * and name, plus every wave's warning glow, from the boss's absolute
+   * timestamps. Follow-up waves become visible only once their own warnAt
+   * arrives; a bar disappears once its own attack's first-wave channel
+   * ends, even while later waves of the same or other attacks continue. */
   renderBossFrame(now) {
-    const attacking = this.boss.state === 'attacking';
+    for (const bar of this.attackBars) {
+      const casting = now < bar.channelEndAt;
+      bar.bg.setVisible(casting);
+      bar.fill.setVisible(casting);
+      bar.text.setVisible(casting);
+      if (!casting) continue;
 
-    // The cast bar spans only the first wave's channel; later waves of the
-    // same attack keep their glow warnings but the bar has finished.
-    const casting = attacking && now < this.boss.channelEndAt;
-    this.castBarBg.setVisible(casting);
-    this.castBarFill.setVisible(casting);
-    this.castNameText.setVisible(casting);
-
-    if (casting) {
-      const { x, y, width, height } = this.castBar;
-      const span = this.boss.channelEndAt - this.boss.channelStartAt;
-      const progress = span > 0 ? Phaser.Math.Clamp((now - this.boss.channelStartAt) / span, 0, 1) : 1;
-      this.castBarFill.clear();
-      this.castBarFill.fillStyle(0xe74c3c, 1);
-      this.castBarFill.fillRoundedRect(x, y, width * progress, height, 4);
+      const span = bar.channelEndAt - bar.channelStartAt;
+      const progress = span > 0 ? Phaser.Math.Clamp((now - bar.channelStartAt) / span, 0, 1) : 1;
+      bar.fill.clear();
+      bar.fill.fillStyle(0xe74c3c, 1);
+      bar.fill.fillRoundedRect(bar.x, bar.y, bar.width * progress, bar.height, 4);
     }
 
-    if (!attacking) return;
+    if (this.boss.state !== 'attacking') return;
 
     // Very light, slow blink (lower bound raised ~halfway to the upper
     // bound so it doesn't blend into the board background).

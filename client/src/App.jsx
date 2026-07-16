@@ -350,7 +350,7 @@ function DebugPanel({ match, now }) {
         <div style={{ fontVariantNumeric: 'tabular-nums', lineHeight: 1.6 }}>
           <div>Cast Interval: {timings.castInterval.toFixed(2)}s</div>
           <div>Channel Time: {timings.channelTime.toFixed(2)}s</div>
-          <div>Attack: {match.attackName ?? '—'}</div>
+          <div>Attack: {match.attackNames?.length ? match.attackNames.join(' + ') : '—'}</div>
           <div style={{ color: '#666', fontSize: 12, marginTop: 4 }}>
             progress: {(timings.progress * 100).toFixed(1)}%
           </div>
@@ -390,7 +390,8 @@ export default function App() {
       setMatch({
         ...state.match,
         enraged: state.boss?.enraged ?? false,
-        attackName: state.boss?.name ?? null,
+        // Attacks can overlap; show every concurrent attack's name.
+        attackNames: (state.boss?.attacks ?? []).map((a) => a.name),
       });
     };
     const onWelcome = ({ id, state }) => {

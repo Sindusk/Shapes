@@ -59,19 +59,19 @@ export class Game {
     this.players = new Map();
     this.dirty = false; // set only on real state changes; the loop broadcasts on dirty ticks
 
-    // An attack is a named pattern made of one or more "waves", each with
-    // absolute warnAt/resolveAt timestamps (see patterns.js) — the client
-    // animates warnings, cast bar, and blink entirely from these, without
-    // needing a broadcast every tick. Waves are pruned from the array as
-    // they resolve. channelStartAt/channelEndAt span the first wave's
-    // channel and drive the cast bar.
+    // Attacks can overlap: a new cast starts on its own schedule regardless
+    // of whether earlier attacks still have waves pending, so several named
+    // attacks can be mid-resolution at once. Each entry in `boss.attacks` is
+    // an independent named pattern: { name, waves, channelStartAt,
+    // channelEndAt, enraged }. Waves carry absolute warnAt/resolveAt
+    // timestamps (see patterns.js) — the client animates warnings, cast
+    // bars, and blink entirely from these, without needing a broadcast
+    // every tick. An attack is removed from the array once all its waves
+    // have resolved.
     this.boss = {
-      state: 'idle', // 'idle' | 'attacking'
-      name: null,
-      waves: [],
+      state: 'idle', // 'idle' | 'attacking' (attacking whenever attacks.length > 0)
+      attacks: [],
       enraged: false,
-      channelStartAt: 0,
-      channelEndAt: 0,
     };
     this.nextChannelAt = 0;
     this.lastAttackName = null;
@@ -287,16 +287,15 @@ export class Game {
   }
 
   /**
-   * Starts an attack (a named pattern of one or more waves). Cast interval
-   * and channel duration are computed from the match progress at this
-   * moment: the next cast is scheduled `castInterval` after *this* cast's
-   * start, regardless of how long this attack takes to fully resolve —
-   * though a new attack never begins while a previous one still has waves
-   * pending.
+   * Starts an attack (a named pattern of one or more waves) and adds it
+   * alongside any attacks already in progress. Cast interval and channel
+   * duration are computed from the match progress at this moment; the next
+   * cast is scheduled `castInterval` after *this* cast's start regardless
+   * of how long this or any other attack takes to fully resolve — attacks
+   * are allowed to overlap, stacking their glow tiles for extra chaos.
    */
   startAttack(now) {
     const enraged = this.isEnraged(now);
-    this.boss.enraged = enraged;
 
     const scaling = this.scalingFactor(now);
     const channelDurationMs = enraged
@@ -306,48 +305,58 @@ export class Game {
       ? ENRAGE_CAST_INTERVAL_MS
       : (BOSS_CAST_INTERVAL_START - (BOSS_CAST_INTERVAL_START - BOSS_CAST_INTERVAL_END) * scaling) * 1000;
 
+    let name, waves;
     if (enraged) {
-      this.boss.name = 'Enrage';
-      this.boss.waves = [
-        { tiles: allTiles(), warnAt: now, resolveAt: now + channelDurationMs },
-      ];
+      name = 'Enrage';
+      waves = [{ tiles: allTiles(), warnAt: now, resolveAt: now + channelDurationMs }];
     } else {
       const alive = [...this.players.values()].filter((p) => !p.eliminated && !p.benched);
       const attack = buildAttack(now, channelDurationMs, {
         players: alive,
         excludeName: this.lastAttackName,
       });
-      this.boss.name = attack.name;
-      this.boss.waves = attack.waves;
-      this.lastAttackName = attack.name;
+      name = attack.name;
+      waves = attack.waves;
+      this.lastAttackName = name;
     }
 
+    this.boss.attacks.push({
+      name,
+      waves,
+      channelStartAt: now,
+      channelEndAt: waves[0]?.resolveAt ?? now + channelDurationMs,
+      enraged,
+    });
     this.boss.state = 'attacking';
-    this.boss.channelStartAt = now;
-    this.boss.channelEndAt = this.boss.waves[0]?.resolveAt ?? now + channelDurationMs;
+    this.boss.enraged = this.boss.attacks.some((a) => a.enraged);
     this.nextChannelAt = now + castIntervalMs;
     this.dirty = true;
   }
 
-  /** Resolves every wave whose time has come (waves are sorted by
-   * resolveAt); once the last wave of the attack resolves, the round
-   * advances and the boss returns to idle. */
+  /** Resolves every wave whose time has come, across every attack in
+   * progress (each attack's waves are sorted by resolveAt). Once an
+   * attack's waves are all gone it's dropped from `boss.attacks`; once no
+   * attacks remain the boss goes idle. */
   resolveWaves(now) {
     let resolvedAny = false;
-    while (this.boss.waves.length > 0 && now >= this.boss.waves[0].resolveAt) {
-      this.applyWaveDamage(this.boss.waves.shift(), now);
-      resolvedAny = true;
+    for (const attack of this.boss.attacks) {
+      while (attack.waves.length > 0 && now >= attack.waves[0].resolveAt) {
+        this.applyWaveDamage(attack.waves.shift(), now);
+        resolvedAny = true;
+      }
     }
     if (!resolvedAny) return;
 
-    if (this.boss.waves.length === 0) {
-      this.match.round += 1;
-      if (this.boss.enraged) this.match.enrageAttacks += 1;
-      this.boss.state = 'idle';
-      this.boss.name = null;
-      // nextChannelAt was already scheduled in startAttack, independent of
-      // attack duration; if it has already passed (attack ran long), the
-      // idle branch in update() fires the next cast on the very next tick.
+    const finished = this.boss.attacks.filter((a) => a.waves.length === 0);
+    if (finished.length > 0) {
+      this.boss.attacks = this.boss.attacks.filter((a) => a.waves.length > 0);
+      this.match.round += finished.length;
+      this.match.enrageAttacks += finished.filter((a) => a.enraged).length;
+      this.boss.state = this.boss.attacks.length === 0 ? 'idle' : 'attacking';
+      this.boss.enraged = this.boss.attacks.some((a) => a.enraged);
+      // nextChannelAt was already scheduled independently in startAttack;
+      // if it has already passed, the next cast fires on the very next
+      // tick regardless of whether attacks just finished here.
     }
 
     this.dirty = true;
@@ -384,7 +393,7 @@ export class Game {
   checkMatchEnd(now) {
     const roster = [...this.players.values()].filter((p) => !p.benched);
     const allEliminated = roster.length > 0 && roster.every((p) => p.eliminated);
-    const forcedByEnrage = this.boss.enraged && this.match.enrageAttacks >= ENRAGE_ATTACKS_TO_END_MATCH;
+    const forcedByEnrage = this.isEnraged(now) && this.match.enrageAttacks >= ENRAGE_ATTACKS_TO_END_MATCH;
 
     if (!allEliminated && !forcedByEnrage) return;
 
@@ -402,8 +411,7 @@ export class Game {
 
   endMatch(now) {
     this.boss.state = 'idle';
-    this.boss.name = null;
-    this.boss.waves = [];
+    this.boss.attacks = [];
     this.boss.enraged = false;
     this.lastAttackName = null;
     this.egg = null;
@@ -448,6 +456,7 @@ export class Game {
     this.match.round = 0;
     this.match.enrageAttacks = 0;
     this.boss.state = 'idle';
+    this.boss.attacks = [];
     this.boss.enraged = false;
     this.nextChannelAt = now + BOSS_CAST_INTERVAL_START * 1000;
     this.egg = this.findFreeTile(); // the egg spawns on a free tile at match start
@@ -468,8 +477,7 @@ export class Game {
         this.match.countdownEndAt = null;
         this.match.startedAt = null;
         this.boss.state = 'idle';
-        this.boss.name = null;
-        this.boss.waves = [];
+        this.boss.attacks = [];
         this.lastAttackName = null;
         this.egg = null;
         this.dirty = true;
@@ -484,12 +492,9 @@ export class Game {
       return;
     }
 
-    // active
-    if (this.boss.state === 'idle') {
-      if (now >= this.nextChannelAt) this.startAttack(now);
-      return;
-    }
-
+    // active — a new cast can start even while earlier attacks are still
+    // resolving, so attacks are allowed to overlap.
+    if (now >= this.nextChannelAt) this.startAttack(now);
     this.resolveWaves(now);
   }
 
