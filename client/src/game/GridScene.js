@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { socket } from '../socket.js';
+import Effects from './effects.js';
 
 const GRID_SIZE = 7;
 const TILE = 60;
@@ -34,6 +35,14 @@ export default class GridScene extends Phaser.Scene {
     // so follow-up warnings appear on schedule without needing another
     // broadcast.
     this.waveGlow = [];
+    // Wave impact effects fire client-side the moment a wave's resolveAt
+    // passes (or the wave vanishes from a snapshot because the server
+    // resolved it first — clock offset jitter can put us slightly behind).
+    // Keyed by a per-wave signature so each wave erupts exactly once even
+    // though waveGlow is rebuilt wholesale on every broadcast.
+    this.firedWaves = new Map(); // wave key -> resolveAt (for pruning)
+    this.waveEmberEmitters = new Map(); // wave key -> ember particle emitter
+    this.eggPos = null; // last known egg tile, for egg-hit impact effects
     // One entry per concurrent attack's cast bar: { name, channelStartAt,
     // channelEndAt, bg, fill, text }. Attacks can overlap, so more than one
     // bar can be visible at once, stacked vertically.
@@ -49,6 +58,7 @@ export default class GridScene extends Phaser.Scene {
 
     this.drawGrid();
     this.drawBoss();
+    this.fx = new Effects(this);
 
     this.keys = this.input.keyboard.addKeys({
       up: Phaser.Input.Keyboard.KeyCodes.UP,
@@ -130,6 +140,7 @@ export default class GridScene extends Phaser.Scene {
   drawBoss() {
     const centerX = this.originX + BOARD / 2;
     const bossY = 34;
+    this.bossCenter = { x: centerX, y: bossY }; // laser target for ability 1
     const g = this.add.graphics();
     g.fillStyle(0x8e2de2, 1);
     g.fillTriangle(centerX, bossY - 26, centerX - 30, bossY + 20, centerX + 30, bossY + 20);
@@ -176,16 +187,40 @@ export default class GridScene extends Phaser.Scene {
   updateBoss(boss) {
     this.boss = boss;
     const attacks = boss.attacks ?? [];
+    const now = Date.now() + this.clockOffset;
 
+    const newKeys = new Set();
+    for (const attack of attacks) {
+      for (const wave of attack.waves) newKeys.add(this.waveKey(wave));
+    }
+
+    // Waves the server resolved before our clock reached their resolveAt
+    // vanish from the snapshot without renderBossFrame ever firing their
+    // impact — catch those here. (The resolveAt guard skips waves discarded
+    // early by a match ending.)
     for (const wave of this.waveGlow) {
+      if (!newKeys.has(wave.key) && now >= wave.resolveAt - 250) this.fireWaveImpact(wave);
       for (const g of wave.graphics) g.destroy();
     }
     this.waveGlow = [];
 
+    // Ember emitters for waves that no longer exist (however they ended).
+    for (const [key, emitter] of this.waveEmberEmitters) {
+      if (!newKeys.has(key)) {
+        emitter.destroy();
+        this.waveEmberEmitters.delete(key);
+      }
+    }
+    for (const [key, resolveAt] of this.firedWaves) {
+      if (resolveAt < now - 30000) this.firedWaves.delete(key);
+    }
+
     for (const attack of attacks) {
       for (const wave of attack.waves) {
         const graphics = [];
+        const pxTiles = [];
         for (const tile of wave.tiles) {
+          pxTiles.push(this.tileCenter(tile.x, tile.y));
           const g = this.add.graphics();
           g.fillStyle(0xffffff, 1);
           g.fillRoundedRect(
@@ -199,7 +234,14 @@ export default class GridScene extends Phaser.Scene {
           g.setVisible(false);
           graphics.push(g);
         }
-        this.waveGlow.push({ warnAt: wave.warnAt, resolveAt: wave.resolveAt, graphics });
+        this.waveGlow.push({
+          key: this.waveKey(wave),
+          warnAt: wave.warnAt,
+          resolveAt: wave.resolveAt,
+          tiles: wave.tiles,
+          pxTiles,
+          graphics,
+        });
       }
     }
 
@@ -246,6 +288,36 @@ export default class GridScene extends Phaser.Scene {
         g.setVisible(active);
         if (active) g.setAlpha(blinkAlpha);
       }
+      if (active && !this.waveEmberEmitters.has(wave.key)) {
+        this.waveEmberEmitters.set(wave.key, this.fx.embers(wave.pxTiles, TILE));
+      }
+      if (now >= wave.resolveAt) this.fireWaveImpact(wave);
+    }
+  }
+
+  /** Stable per-wave signature: resolveAt is millisecond-precise and
+   * unique enough combined with the wave's shape. */
+  waveKey(wave) {
+    const first = wave.tiles[0];
+    return `${wave.resolveAt}:${wave.tiles.length}:${first ? `${first.x},${first.y}` : '-'}`;
+  }
+
+  /** Fires the red/brown eruption (plus egg-crack effect if the egg stood
+   * in the wave) exactly once per wave, and retires its ember emitter. */
+  fireWaveImpact(wave) {
+    if (this.firedWaves.has(wave.key)) return;
+    this.firedWaves.set(wave.key, wave.resolveAt);
+
+    const embers = this.waveEmberEmitters.get(wave.key);
+    if (embers) {
+      embers.destroy();
+      this.waveEmberEmitters.delete(wave.key);
+    }
+
+    this.fx.waveImpact(wave.pxTiles, TILE);
+    if (this.eggPos && wave.tiles.some((t) => t.x === this.eggPos.x && t.y === this.eggPos.y)) {
+      const { px, py } = this.tileCenter(this.eggPos.x, this.eggPos.y);
+      this.fx.eggHit(px, py);
     }
   }
 
@@ -276,8 +348,17 @@ export default class GridScene extends Phaser.Scene {
     const seen = new Set();
 
     for (const player of state.players) {
+      const prev = this.playerData.get(player.id);
       this.playerData.set(player.id, player);
       if (player.benched || player.x === null || player.y === null) continue; // not on the board
+
+      if (prev && !prev.benched && prev.x !== null) {
+        this.detectAbilityEffects(prev, player);
+        if (player.lives < prev.lives) {
+          const { px, py } = this.tileCenter(player.x, player.y);
+          this.fx.playerHit(px, py);
+        }
+      }
 
       seen.add(player.id);
       const { px, py } = this.tileCenter(player.x, player.y);
@@ -307,6 +388,7 @@ export default class GridScene extends Phaser.Scene {
     // Remove sprites for players that left.
     for (const [id, sprite] of this.sprites) {
       if (!seen.has(id)) {
+        if (sprite.aura) sprite.aura.destroy(); // follow target is going away
         sprite.container.destroy();
         this.sprites.delete(id);
       }
@@ -319,9 +401,37 @@ export default class GridScene extends Phaser.Scene {
     this.updateEgg(state.egg ?? null);
   }
 
+  /** The server broadcasts every validated ability use (setting its
+   * cooldown marks the game dirty), so a slot's cooldown timestamp rising
+   * between two snapshots is a reliable "this player just used this
+   * ability" signal — no extra socket event needed. Cooldowns only ever
+   * move up on use (match resets drop them to 0, which doesn't trigger). */
+  detectAbilityEffects(prev, player) {
+    const used = (slot) => (player.cooldowns?.[slot] ?? 0) > (prev.cooldowns?.[slot] ?? 0);
+    const { px, py } = this.tileCenter(player.x, player.y);
+
+    if (used(1)) this.fx.laser(px, py, this.bossCenter.x, this.bossCenter.y);
+    if (used(2)) this.fx.gust(px, py);
+    if (used(3)) {
+      // Ripple along every tile of the dash path, old position to new.
+      const dx = Math.sign(player.x - prev.x);
+      const dy = Math.sign(player.y - prev.y);
+      const points = [this.tileCenter(prev.x, prev.y)];
+      let { x, y } = prev;
+      while ((x !== player.x || y !== player.y) && points.length < GRID_SIZE) {
+        x += dx;
+        y += dy;
+        points.push(this.tileCenter(x, y));
+      }
+      this.fx.dashRipple(points);
+    }
+    if (used(4)) this.fx.invulnBurst(px, py);
+  }
+
   /** Creates/moves/removes the egg sprite to match the snapshot. Pushes
    * animate with the same short tween as player movement. */
   updateEgg(egg) {
+    this.eggPos = egg;
     if (!egg) {
       if (this.eggSprite) {
         this.eggSprite.destroy();
@@ -356,6 +466,17 @@ export default class GridScene extends Phaser.Scene {
       const player = this.playerData.get(id);
       if (!player) continue;
       const invulnerable = player.invulnerableUntil > now;
+
+      // Golden radiance while invulnerable: a follow emitter attached for
+      // exactly as long as invulnerableUntil says, same timestamp-driven
+      // pattern as the ring color below.
+      if (invulnerable && !sprite.aura) {
+        sprite.aura = this.fx.attachAura(sprite.container, sprite.radius + 10);
+      } else if (!invulnerable && sprite.aura) {
+        this.fx.releaseAura(sprite.aura);
+        sprite.aura = null;
+      }
+
       const isSelf = id === this.myId;
       sprite.ring.clear();
       sprite.ring.lineStyle(

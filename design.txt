@@ -91,3 +91,19 @@ Add the concept of the "egg", a special non-player character that spawns on a ti
 - If that tile is occupied by a player, or a wall, then it swaps places with the player instead.
 - If the egg is hit by a boss ability, every player in the match loses a life.
 
+--- Development Phase 6 ---
+
+Use Phaser to begin adding particle effects to various parts of the game:
+- Particle effects player abilities. Ideally these stay in the blue/gold theme for visual clarity. Ability 1 should shoot a small blue laser beam at the boss. Ability 2 should cause a gust of wind around the player. Ability 3 should cause a "ripple" effect similar to The Flash when they dash forward. Ability 4 should emit a golden radiance around the player signaling invulnerability.
+- Particle effects for each boss attack. Ideally these stay in red/brown thematics for clarity. Up to you to design the visuals.
+- Effect for when damage occurs on a tile. It might shake slightly or something, I'll leave it up to you to design.
+Implemented visuals (Claude's design, per the above):
+- Ability 1: thin blue laser beam drawn from the caster to the boss with spark bursts at both ends.
+- Ability 2: pale-blue radial wind burst plus two expanding rings around the caster.
+- Ability 3: Flash-style ripple — blue expanding rings staggered tile-by-tile along the dash path.
+- Ability 4: golden burst on cast, then a golden sparkle aura following the player for the invulnerability duration.
+- Boss warnings: red embers rise from every glowing tile while its warning is active.
+- Wave resolution: red/brown eruption burst + brief red flash on each hit tile, with a small camera shake scaled by how many tiles were hit.
+- Player damage: red burst + ring on any player who loses a life.
+- Egg hit: cream shell-fragment burst layered on the eruption, so the whole-lobby life loss reads loudly.
+All effects are client-side, derived from data already in the snapshot (ability use is detected by a player's cooldown timestamp rising between snapshots; impacts fire from wave resolve timestamps) — no new socket events.
