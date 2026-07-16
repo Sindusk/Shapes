@@ -10,6 +10,9 @@ export default defineConfig({
         target: 'http://localhost:3002',
         ws: true,
       },
+      '/api': {
+        target: 'http://localhost:3002',
+      },
     },
   },
 });

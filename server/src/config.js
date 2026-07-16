@@ -33,5 +33,15 @@ export const ENRAGE_CAST_INTERVAL_MS = 1000;
 export const ENRAGE_CHANNEL_DURATION_MS = 500;
 export const ENRAGE_ATTACKS_TO_END_MATCH = 3;
 
+// Ability bar: 4 slots bound to keys 1-4. Cooldowns are in ms.
+export const ABILITY_DAMAGE_COOLDOWN_MS = 2500; // placeholder, does nothing yet
+export const ABILITY_PUSHBACK_COOLDOWN_MS = 20000;
+export const ABILITY_DASH_COOLDOWN_MS = 10000;
+export const ABILITY_INVULN_COOLDOWN_MS = 45000;
+
+export const PUSHBACK_STUN_MS = 1000; // applied when a pushed player can't be moved
+export const DASH_TILES = 3;
+export const INVULN_DURATION_MS = 2000;
+
 // Port is set via .env at the repo root (see PORTS.md before changing).
 export const PORT = process.env.PORT ?? 3002;

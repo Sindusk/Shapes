@@ -15,6 +15,13 @@ import {
   ENRAGE_CAST_INTERVAL_MS,
   ENRAGE_CHANNEL_DURATION_MS,
   ENRAGE_ATTACKS_TO_END_MATCH,
+  ABILITY_DAMAGE_COOLDOWN_MS,
+  ABILITY_PUSHBACK_COOLDOWN_MS,
+  ABILITY_DASH_COOLDOWN_MS,
+  ABILITY_INVULN_COOLDOWN_MS,
+  PUSHBACK_STUN_MS,
+  DASH_TILES,
+  INVULN_DURATION_MS,
 } from './config.js';
 
 const SHAPES = ['circle', 'square', 'triangle', 'diamond', 'pentagon', 'star'];
@@ -28,6 +35,13 @@ const DIRECTIONS = {
 };
 
 const TOTAL_TILES = GRID_SIZE * GRID_SIZE;
+
+const ABILITY_COOLDOWNS = {
+  1: ABILITY_DAMAGE_COOLDOWN_MS,
+  2: ABILITY_PUSHBACK_COOLDOWN_MS,
+  3: ABILITY_DASH_COOLDOWN_MS,
+  4: ABILITY_INVULN_COOLDOWN_MS,
+};
 
 function clamp(n, min, max) {
   return Math.min(max, Math.max(min, n));
@@ -86,7 +100,7 @@ export class Game {
     return free[Math.floor(Math.random() * free.length)];
   }
 
-  addPlayer(id) {
+  addPlayer(id, username = null) {
     const now = Date.now();
     const benched = this.match.phase === 'active';
     const tile = benched ? null : this.findFreeTile();
@@ -94,6 +108,7 @@ export class Game {
 
     const player = {
       id,
+      username: username ?? `Player ${id.slice(0, 4)}`,
       x: tile ? tile.x : null,
       y: tile ? tile.y : null,
       shape: SHAPES[Math.floor(Math.random() * SHAPES.length)],
@@ -103,6 +118,10 @@ export class Game {
       benched,
       eliminatedAt: null,
       aliveMs: null,
+      facing: 'down',
+      cooldowns: { 1: 0, 2: 0, 3: 0, 4: 0 }, // slot -> timestamp when usable again
+      stunnedUntil: 0,
+      invulnerableUntil: 0,
     };
     this.players.set(id, player);
 
@@ -120,10 +139,16 @@ export class Game {
   }
 
   /** Server-authoritative move: validates direction, bounds, and collision. */
-  tryMove(id, direction) {
+  tryMove(id, direction, now = Date.now()) {
     const player = this.players.get(id);
     const dir = DIRECTIONS[direction];
     if (!player || player.eliminated || player.benched || !dir) return false;
+    if (player.stunnedUntil > now) return false;
+
+    if (player.facing !== direction) {
+      player.facing = direction;
+      this.dirty = true;
+    }
 
     const nx = player.x + dir.dx;
     const ny = player.y + dir.dy;
@@ -134,6 +159,84 @@ export class Game {
     player.y = ny;
     this.dirty = true;
     return true;
+  }
+
+  /** Server-authoritative ability use: validates the caster, cooldown, and
+   * stun state, then dispatches to the per-slot handler. */
+  tryAbility(id, slot, now = Date.now()) {
+    const player = this.players.get(id);
+    const cooldownMs = ABILITY_COOLDOWNS[slot];
+    if (!player || player.eliminated || player.benched || !cooldownMs) return false;
+    if (player.stunnedUntil > now) return false;
+    if (player.cooldowns[slot] > now) return false;
+
+    player.cooldowns[slot] = now + cooldownMs;
+
+    switch (slot) {
+      case 1:
+        break; // damage: placeholder, no effect yet
+      case 2:
+        this.abilityPushback(player, now);
+        break;
+      case 3:
+        this.abilityDash(player, now);
+        break;
+      case 4:
+        player.invulnerableUntil = now + INVULN_DURATION_MS;
+        break;
+    }
+
+    this.dirty = true;
+    return true;
+  }
+
+  /** Pushes every other active player 1 tile away from the caster (including
+   * diagonally, based on their relative position). A push that can't land
+   * in-bounds or on a free tile stuns the target instead. */
+  abilityPushback(caster, now) {
+    const targets = [...this.players.values()].filter(
+      (p) => p !== caster && !p.eliminated && !p.benched
+    );
+
+    const claimed = new Set([`${caster.x},${caster.y}`]);
+    const moves = [];
+
+    for (const p of targets) {
+      const ddx = Math.sign(p.x - caster.x);
+      const ddy = Math.sign(p.y - caster.y);
+      const nx = p.x + ddx;
+      const ny = p.y + ddy;
+      const inBounds = nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE;
+      const key = `${nx},${ny}`;
+
+      if (!inBounds || claimed.has(key)) {
+        p.stunnedUntil = now + PUSHBACK_STUN_MS;
+        continue;
+      }
+      claimed.add(key);
+      moves.push({ p, nx, ny });
+    }
+
+    for (const { p, nx, ny } of moves) {
+      p.x = nx;
+      p.y = ny;
+    }
+  }
+
+  /** Moves the caster up to DASH_TILES in their facing direction, stopping
+   * at the first wall or occupied tile. */
+  abilityDash(caster, now) {
+    const dir = DIRECTIONS[caster.facing];
+    if (!dir) return;
+
+    for (let i = 0; i < DASH_TILES; i++) {
+      const nx = caster.x + dir.dx;
+      const ny = caster.y + dir.dy;
+      if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) break;
+      if (this.isOccupied(nx, ny)) break;
+      caster.x = nx;
+      caster.y = ny;
+    }
   }
 
   pickGlowTiles(count) {
@@ -206,6 +309,7 @@ export class Game {
       if (player.eliminated || player.benched) continue;
       const hit = this.boss.tiles.some((t) => t.x === player.x && t.y === player.y);
       if (!hit) continue;
+      if (player.invulnerableUntil > now) continue;
       player.lives -= 1;
       if (player.lives <= 0) {
         player.lives = 0;
@@ -269,6 +373,10 @@ export class Game {
       player.benched = false;
       player.x = null;
       player.y = null;
+      player.facing = 'down';
+      player.cooldowns = { 1: 0, 2: 0, 3: 0, 4: 0 };
+      player.stunnedUntil = 0;
+      player.invulnerableUntil = 0;
     }
     for (const player of this.players.values()) {
       const tile = this.findFreeTile();

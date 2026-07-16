@@ -8,11 +8,17 @@ const BOARD = GRID_SIZE * TILE + (GRID_SIZE - 1) * GAP;
 const MOVE_COOLDOWN_MS = 150; // client-side throttle; the server still validates every move
 const BOSS_ZONE_HEIGHT = 120; // reserved space above the grid for the boss + cast bar
 
+// Rotation (radians) applied so the top of each shape faces the player's
+// last-moved direction. Shapes are drawn pointing up by default (facing 'up' = 0).
+const FACING_ROTATION = { up: 0, right: Math.PI / 2, down: Math.PI, left: -Math.PI / 2 };
+const GOLD = 0xffd700;
+
 export default class GridScene extends Phaser.Scene {
   constructor() {
     super('GridScene');
     this.myId = null;
-    this.sprites = new Map(); // player id -> Phaser.GameObjects.Graphics
+    this.sprites = new Map(); // player id -> { container, ring, radius }
+    this.playerData = new Map(); // player id -> latest snapshot player object
     this.lastMoveAt = 0;
     this.glowTiles = []; // graphics for currently-highlighted boss tiles
     this.boss = { state: 'idle', tiles: [], enraged: false, channelStartAt: 0, channelEndAt: 0 };
@@ -37,6 +43,26 @@ export default class GridScene extends Phaser.Scene {
       d: Phaser.Input.Keyboard.KeyCodes.D,
     });
 
+    this.stunText = this.add
+      .text(0, 0, 'STUNNED', {
+        fontFamily: 'sans-serif',
+        fontSize: '32px',
+        fontStyle: 'bold',
+        color: '#ffffff',
+        stroke: '#000000',
+        strokeThickness: 4,
+      })
+      .setOrigin(0.5)
+      .setDepth(10)
+      .setVisible(false);
+    this.stunText.setPosition(this.originX + BOARD / 2, this.originY + BOARD / 2);
+
+    this.onAbilityKey = (slot) => socket.emit('ability', slot);
+    this.input.keyboard.on('keydown-ONE', () => this.onAbilityKey(1));
+    this.input.keyboard.on('keydown-TWO', () => this.onAbilityKey(2));
+    this.input.keyboard.on('keydown-THREE', () => this.onAbilityKey(3));
+    this.input.keyboard.on('keydown-FOUR', () => this.onAbilityKey(4));
+
     this.onWelcome = ({ id, state }) => {
       this.myId = id;
       this.applyState(state);
@@ -50,11 +76,17 @@ export default class GridScene extends Phaser.Scene {
     this.events.on(Phaser.Scenes.Events.SHUTDOWN, () => {
       socket.off('welcome', this.onWelcome);
       socket.off('state', this.onState);
+      this.input.keyboard.off('keydown-ONE');
+      this.input.keyboard.off('keydown-TWO');
+      this.input.keyboard.off('keydown-THREE');
+      this.input.keyboard.off('keydown-FOUR');
     });
   }
 
   update(time) {
-    this.renderBossFrame(Date.now() + this.clockOffset);
+    const now = Date.now() + this.clockOffset;
+    this.renderBossFrame(now);
+    this.renderPlayerFrame(now);
 
     if (time - this.lastMoveAt < MOVE_COOLDOWN_MS) return;
 
@@ -176,6 +208,7 @@ export default class GridScene extends Phaser.Scene {
     const seen = new Set();
 
     for (const player of state.players) {
+      this.playerData.set(player.id, player);
       if (player.benched || player.x === null || player.y === null) continue; // not on the board
 
       seen.add(player.id);
@@ -184,27 +217,63 @@ export default class GridScene extends Phaser.Scene {
 
       if (!sprite) {
         sprite = this.createShape(player);
-        sprite.setPosition(px, py);
-        sprite.setDepth(1);
+        sprite.container.setPosition(px, py);
+        sprite.container.setDepth(1);
         this.sprites.set(player.id, sprite);
-      } else if (sprite.x !== px || sprite.y !== py) {
-        this.tweens.add({ targets: sprite, x: px, y: py, duration: 100, ease: 'Power2' });
+      } else if (sprite.container.x !== px || sprite.container.y !== py) {
+        this.tweens.add({ targets: sprite.container, x: px, y: py, duration: 100, ease: 'Power2' });
       }
-      sprite.setAlpha(player.eliminated ? 0.25 : 1);
+      sprite.container.setAlpha(player.eliminated ? 0.25 : 1);
+
+      const targetRotation = FACING_ROTATION[player.facing] ?? 0;
+      if (sprite.container.rotation !== targetRotation) {
+        this.tweens.add({
+          targets: sprite.container,
+          rotation: targetRotation,
+          duration: 100,
+          ease: 'Power2',
+        });
+      }
     }
 
     // Remove sprites for players that left.
     for (const [id, sprite] of this.sprites) {
       if (!seen.has(id)) {
-        sprite.destroy();
+        sprite.container.destroy();
         this.sprites.delete(id);
       }
+    }
+    for (const id of [...this.playerData.keys()]) {
+      if (!state.players.some((p) => p.id === id)) this.playerData.delete(id);
     }
 
     if (state.boss) this.updateBoss(state.boss);
   }
 
+  /** Runs every render frame; updates the invulnerability ring color/pulse
+   * and the local player's stun banner from absolute server timestamps, so
+   * they animate smoothly without needing a broadcast on every tick. */
+  renderPlayerFrame(now) {
+    for (const [id, sprite] of this.sprites) {
+      const player = this.playerData.get(id);
+      if (!player) continue;
+      const invulnerable = player.invulnerableUntil > now;
+      const isSelf = id === this.myId;
+      sprite.ring.clear();
+      sprite.ring.lineStyle(
+        isSelf ? 3 : 1.5,
+        invulnerable ? GOLD : 0xffffff,
+        invulnerable ? 1 : isSelf ? 1 : 0.35
+      );
+      sprite.ring.strokeCircle(0, 0, sprite.radius + 8);
+    }
+
+    const me = this.myId ? this.playerData.get(this.myId) : null;
+    this.stunText.setVisible(!!me && me.stunnedUntil > now);
+  }
+
   createShape(player) {
+    const container = this.add.container(0, 0);
     const g = this.add.graphics();
     const r = TILE * 0.32;
     g.fillStyle(player.color, 1);
@@ -235,12 +304,17 @@ export default class GridScene extends Phaser.Scene {
         g.fillCircle(0, 0, r);
     }
 
-    // Outline the local player's shape so they can find themselves.
-    if (player.id === this.myId) {
-      g.lineStyle(3, 0xffffff, 1);
-      g.strokeCircle(0, 0, r + 8);
-    }
-    return g;
+    // Small facing marker at the shape's "top" (pre-rotation), so even
+    // symmetric shapes like circles clearly show which way they're facing.
+    g.fillStyle(0xffffff, 0.9);
+    g.fillTriangle(-5, -r - 2, 5, -r - 2, 0, -r - 12);
+
+    const ring = this.add.graphics();
+    ring.lineStyle(player.id === this.myId ? 3 : 1.5, 0xffffff, player.id === this.myId ? 1 : 0.35);
+    ring.strokeCircle(0, 0, r + 8);
+
+    container.add([g, ring]);
+    return { container, ring, radius: r };
   }
 
   polygonPoints(count, r) {

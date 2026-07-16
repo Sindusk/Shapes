@@ -60,3 +60,14 @@ Additionally, the boss will now attack a random amount of squares on each attack
 - At the start of the match, the bell curve will have 1/3 of the total tiles be attacked on average.
 - By the end of the match, 2/3 of the tiles should be attacked on average.
 When the max match length is exceeded, all tiles on the board will be hit with every attack. This will mark "enrage" and forcibly end the match after a few attacks.
+
+--- Development Phase 4 ---
+
+Add the concept of rotation/facing for players, with only cardinal directions. Facing should be determined by the last direction the player moved. Their shape should rotate so that the top of their shape faces the direction they last moved.
+Add an ability bar for every player, bound to keys 1, 2, 3, 4. There will be precisely 4 slots for abilities.
+- The bar will be displayed at the bottom of the screen, below the grid. All 4 slots will be laid out horizontally, next to eachother, as squares similar to an MMORPG ability bar.
+- The first ability, bound to key 1, will be the damage button. It will have a cooldown of 2.5 seconds. This is a placeholder and should do nothing for the time being. But allow players to press it to trigger the cooldown anyways.
+- The second ability, bound to key 2, will be a pushback. It will take all players 1 square away from the current player, including diagonally, and push them away by 1 tile. This will have a cooldown of 20 seconds. If any of the players pushed by this ability get pushed into a wall or cannot move, they are instead stunned for 1 second, disabling all abilities and movement. They should receive a message across the center of the grid saying "STUNNED" when this occurs, which goes away when the stun expires.
+- The third ability, bound to key 3, will be a dash. It will move the player 3 tiles forward in their current facing direction. If they would hit a wall with this dash, it puts them at the wall. This will have a 10 second cooldown.
+- The fourth ability, bound to key 4, will be an invulnerability. It will negate the effects of getting hit by a bad tile. The invulnerability lasts for 2 seconds. The cooldown will be 45 seconds. Indicate the invulnerability by turning the ring around them golden instead of white for the duration.
+Begin adding authentication with the users database and replacing "Player X" with their username if they're logged in. Add a burger menu to the top left of the screen with a single option "Login" if they need to login, or "Logout" if they need to logout. At the top of the burger menu it should display their username and role if they are logged in.

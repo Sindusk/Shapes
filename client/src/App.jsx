@@ -70,6 +70,122 @@ function sortPlayers(players) {
   return [...alive, ...eliminated, ...benched];
 }
 
+function BurgerMenu({ user, setUser }) {
+  const [open, setOpen] = useState(false);
+  const [showLoginForm, setShowLoginForm] = useState(false);
+  const [username, setUsername] = useState('');
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState(null);
+
+  async function submitLogin(e) {
+    e.preventDefault();
+    setError(null);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, pin }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'Login failed');
+        return;
+      }
+      setUser({ username: data.username, role: data.role });
+      setShowLoginForm(false);
+      setOpen(false);
+      setUsername('');
+      setPin('');
+    } catch {
+      setError('Could not reach the server');
+    }
+  }
+
+  async function logout() {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    setUser(null);
+    setOpen(false);
+  }
+
+  return (
+    <div style={{ position: 'fixed', top: 16, left: 16, zIndex: 20 }}>
+      <button
+        onClick={() => {
+          setOpen((o) => !o);
+          setShowLoginForm(false);
+          setError(null);
+        }}
+        style={{
+          width: 40,
+          height: 40,
+          borderRadius: 6,
+          border: '1px solid #0f3460',
+          background: '#16213e',
+          color: '#fff',
+          fontSize: 20,
+          cursor: 'pointer',
+        }}
+      >
+        ☰
+      </button>
+      {open && (
+        <div
+          style={{
+            marginTop: 8,
+            width: 200,
+            background: '#16213e',
+            border: '1px solid #0f3460',
+            borderRadius: 8,
+            padding: 12,
+          }}
+        >
+          {user && (
+            <div style={{ marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #0f3460' }}>
+              <div style={{ fontWeight: 'bold' }}>{user.username}</div>
+              <div style={{ fontSize: 12, color: '#aaa', textTransform: 'capitalize' }}>{user.role}</div>
+            </div>
+          )}
+          {!user && !showLoginForm && (
+            <button
+              onClick={() => setShowLoginForm(true)}
+              style={{ width: '100%', padding: '6px 0', cursor: 'pointer' }}
+            >
+              Login
+            </button>
+          )}
+          {!user && showLoginForm && (
+            <form onSubmit={submitLogin} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <input
+                placeholder="Username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                maxLength={32}
+                style={{ padding: 6 }}
+              />
+              <input
+                placeholder="4-digit PIN"
+                value={pin}
+                onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                inputMode="numeric"
+                style={{ padding: 6 }}
+              />
+              {error && <div style={{ color: '#e74c3c', fontSize: 12 }}>{error}</div>}
+              <button type="submit" style={{ padding: '6px 0', cursor: 'pointer' }}>
+                Log in / Register
+              </button>
+            </form>
+          )}
+          {user && (
+            <button onClick={logout} style={{ width: '100%', padding: '6px 0', cursor: 'pointer' }}>
+              Logout
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MatchStatus({ match, now }) {
   let label = '';
   let timer = null;
@@ -131,7 +247,17 @@ function LivesPanel({ players, myId }) {
               flexShrink: 0,
             }}
           />
-          <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+          <span
+            style={{
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              maxWidth: 70,
+            }}
+          >
+            {p.username}
+          </span>
+          <span style={{ fontVariantNumeric: 'tabular-nums', marginLeft: 'auto' }}>
             {p.benched
               ? 'benched'
               : p.eliminated
@@ -140,6 +266,75 @@ function LivesPanel({ players, myId }) {
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+const ABILITIES = [
+  { slot: 1, icon: '⚔', label: 'Damage', cooldownMs: 2500 },
+  { slot: 2, icon: '💨', label: 'Pushback', cooldownMs: 20000 },
+  { slot: 3, icon: '⚡', label: 'Dash', cooldownMs: 10000 },
+  { slot: 4, icon: '✨', label: 'Invuln', cooldownMs: 45000 },
+];
+
+function AbilityBar({ me, now }) {
+  return (
+    <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+      {ABILITIES.map(({ slot, icon, label, cooldownMs }) => {
+        const readyAt = me?.cooldowns?.[slot] ?? 0;
+        const remainingMs = Math.max(0, readyAt - now);
+        const fraction = cooldownMs > 0 ? clamp(remainingMs / cooldownMs, 0, 1) : 0;
+        return (
+          <div
+            key={slot}
+            title={label}
+            style={{
+              position: 'relative',
+              width: 56,
+              height: 56,
+              borderRadius: 8,
+              background: '#16213e',
+              border: '2px solid #0f3460',
+              overflow: 'hidden',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 24,
+              userSelect: 'none',
+            }}
+          >
+            <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 10, color: '#666' }}>
+              {slot}
+            </span>
+            <span>{icon}</span>
+            {fraction > 0 && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  height: `${fraction * 100}%`,
+                  background: 'rgba(0,0,0,0.65)',
+                }}
+              />
+            )}
+            {remainingMs > 0 && (
+              <span
+                style={{
+                  position: 'absolute',
+                  fontSize: 14,
+                  fontWeight: 'bold',
+                  fontVariantNumeric: 'tabular-nums',
+                  textShadow: '0 0 4px #000',
+                }}
+              >
+                {(remainingMs / 1000).toFixed(1)}
+              </span>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -173,7 +368,15 @@ export default function App() {
   const [match, setMatch] = useState({ phase: 'waiting', round: 0, startedAt: null, countdownEndAt: null });
   const [benchedNotice, setBenchedNotice] = useState(null);
   const [now, setNow] = useState(Date.now());
+  const [user, setUser] = useState(null);
   const clockOffsetRef = useRef(0); // serverTime - Date.now()
+
+  useEffect(() => {
+    fetch('/api/auth/me')
+      .then((res) => res.json())
+      .then((data) => setUser(data.user))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const onConnect = () => setStatus('connected');
@@ -225,6 +428,7 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 24 }}>
+      <BurgerMenu user={user} setUser={setUser} />
       <h1 style={{ margin: '0 0 8px' }}>Shapes</h1>
       <p style={{ margin: '0 0 8px', color: '#aaa' }}>
         {status === 'connected' && 'Move with WASD or arrow keys'}
@@ -238,7 +442,10 @@ export default function App() {
       )}
       <div style={{ display: 'grid', gridTemplateColumns: `${SIDEBAR_WIDTH}px auto ${SIDEBAR_WIDTH}px`, gap: 16 }}>
         <LivesPanel players={players} myId={myId} />
-        <PhaserGame />
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <PhaserGame />
+          <AbilityBar me={players.find((p) => p.id === myId)} now={now} />
+        </div>
         <DebugPanel match={match} now={now} />
       </div>
     </div>
