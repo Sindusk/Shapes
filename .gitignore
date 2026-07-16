@@ -7,3 +7,4 @@ dist/
 *.pid
 PORTS.md
 README.md
+design.md
