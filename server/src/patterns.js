@@ -202,6 +202,93 @@ function meteor() {
   return waves;
 }
 
+/** [Custom] A radial arm rotates around the board center like a clock
+ * hand, forcing players to circle around ahead of (or behind) it rather
+ * than just stepping straight in from an edge. */
+function spiral() {
+  const clockwise = Math.random() < 0.5 ? 1 : -1;
+  const startAngle = Math.random() * Math.PI * 2;
+  const stepsPerRotation = 8;
+  const totalSteps = Math.round(stepsPerRotation * 1.25); // just over one full rotation
+  const angleStep = (Math.PI * 2) / stepsPerRotation;
+  const halfWidth = angleStep * 0.6; // slight overlap so the arm reads as continuous
+
+  const waves = [];
+  for (let s = 0; s < totalSteps; s++) {
+    const angle = startAngle + clockwise * s * angleStep;
+    const tiles = allTiles().filter(({ x, y }) => {
+      if (x === CENTER && y === CENTER) return false;
+      const rawDiff = Math.atan2(y - CENTER, x - CENTER) - angle;
+      const diff = Math.atan2(Math.sin(rawDiff), Math.cos(rawDiff)); // normalize to [-pi, pi]
+      return Math.abs(diff) <= halfWidth;
+    });
+    waves.push({ tiles, step: s });
+  }
+  return waves;
+}
+
+/** [Custom] Two beams sweep in from adjacent (perpendicular) sides at
+ * once, together tracing a growing L that crosses near the middle. The
+ * corner opposite their shared edge stays safe until the mechanic ends. */
+function mirror() {
+  const corners = [
+    ['left', 'top'],
+    ['left', 'bottom'],
+    ['right', 'top'],
+    ['right', 'bottom'],
+  ];
+  const [sideA, sideB] = pick(corners);
+
+  const waves = [];
+  for (let i = 0; i < N - 1; i++) {
+    const seen = new Set();
+    const tiles = [];
+    for (const t of [...lineTiles(sideA, i), ...lineTiles(sideB, i)]) {
+      const key = `${t.x},${t.y}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      tiles.push(t);
+    }
+    waves.push({ tiles, step: i });
+  }
+  return waves;
+}
+
+/** [Custom] A few safe pockets shrink over two waves; nearly the whole
+ * board is hit each time except whichever pocket tiles are still safe. */
+function fracture() {
+  const lo = 1;
+  const hi = N - 2;
+  const layouts = [
+    [{ x: lo, y: lo }, { x: hi, y: lo }, { x: CENTER, y: hi }],
+    [{ x: lo, y: hi }, { x: hi, y: hi }, { x: CENTER, y: lo }],
+    [{ x: lo, y: CENTER }, { x: hi, y: CENTER }, { x: CENTER, y: CENTER }],
+  ];
+  const centers = pick(layouts);
+
+  function safeSet(radius) {
+    const safe = new Set();
+    for (const c of centers) {
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const x = c.x + dx;
+          const y = c.y + dy;
+          if (inBounds(x, y)) safe.add(`${x},${y}`);
+        }
+      }
+    }
+    return safe;
+  }
+
+  const waves = [];
+  [1, 0].forEach((radius, step) => {
+    const safe = safeSet(radius);
+    const tiles = allTiles().filter(({ x, y }) => !safe.has(`${x},${y}`));
+    waves.push({ tiles, step });
+  });
+  return waves;
+}
+
 export const PATTERNS = [
   { name: 'Beam', build: beam },
   { name: 'Ring', build: ring },
@@ -212,6 +299,9 @@ export const PATTERNS = [
   { name: 'Cross', build: cross },
   { name: 'Vice', build: vice },
   { name: 'Meteor', build: meteor },
+  { name: 'Spiral', build: spiral },
+  { name: 'Mirror', build: mirror },
+  { name: 'Fracture', build: fracture },
 ];
 
 /**
