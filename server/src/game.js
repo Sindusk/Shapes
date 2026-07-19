@@ -468,10 +468,18 @@ export class Game {
    * attack's waves are all gone it's dropped from `boss.attacks`; once no
    * attacks remain the boss goes idle. */
   resolveWaves(now) {
+    // Attacks can overlap, so a tile a safe-zone wave is currently marking
+    // green might also be targeted by an unrelated concurrent attack.
+    // Compute every tile any active safe-zone wave is protecting right now
+    // and honor it across the board, not just within its own attack —
+    // otherwise "stand in the green" could still get you hit by something
+    // else, which would make the zone unresolvable.
+    const protectedTiles = this.activeSafeTiles(now);
+
     let resolvedAny = false;
     for (const attack of this.boss.attacks) {
       while (attack.waves.length > 0 && now >= attack.waves[0].resolveAt) {
-        this.applyWaveDamage(attack.waves.shift(), now);
+        this.applyWaveDamage(attack.waves.shift(), now, protectedTiles);
         resolvedAny = true;
       }
     }
@@ -493,7 +501,22 @@ export class Game {
     this.checkMatchEnd(now);
   }
 
-  applyWaveDamage(wave, now) {
+  /** Every tile currently marked safe by an active safe-zone wave, across
+   * every attack in progress — "active" meaning currently telegraphed
+   * (warnAt <= now < resolveAt), the same window the client renders the
+   * green tile for. */
+  activeSafeTiles(now) {
+    const safe = new Set();
+    for (const attack of this.boss.attacks) {
+      for (const wave of attack.waves) {
+        if (!wave.safeTiles || now < wave.warnAt || now >= wave.resolveAt) continue;
+        for (const t of wave.safeTiles) safe.add(`${t.x},${t.y}`);
+      }
+    }
+    return safe;
+  }
+
+  applyWaveDamage(wave, now, protectedTiles = new Set()) {
     const hit = new Set(wave.tiles.map((t) => `${t.x},${t.y}`));
 
     // The egg takes the hit for everyone: if a wave lands on it, every
@@ -502,8 +525,9 @@ export class Game {
 
     for (const player of this.players.values()) {
       if (player.eliminated || player.benched) continue;
+      const posKey = `${player.x},${player.y}`;
       let damage = 0;
-      if (hit.has(`${player.x},${player.y}`)) damage += 1;
+      if (hit.has(posKey) && !protectedTiles.has(posKey)) damage += 1;
       if (eggHit) damage += 1;
       if (damage === 0 || player.invulnerableUntil > now) continue;
       if (player.barrierUntil > now) {

@@ -282,25 +282,28 @@ export default class GridScene extends Phaser.Scene {
       for (const wave of attack.waves) {
         const graphics = [];
         const pxTiles = [];
-        for (const tile of wave.tiles) {
-          pxTiles.push(this.tileCenter(tile.x, tile.y));
-          const g = this.add.graphics();
-          g.fillStyle(0xffffff, 1);
-          g.fillRoundedRect(
-            this.originX + tile.x * (TILE + GAP),
-            this.originY + tile.y * (TILE + GAP),
-            TILE,
-            TILE,
-            8
-          );
-          g.setDepth(0.5);
-          g.setVisible(false);
-          graphics.push(g);
+        // Safe-zone waves (Phase 7) only render their green "stand here"
+        // tiles — lighting up the white danger complement too (often most
+        // of the board) was overwhelming and added no information the
+        // green zone didn't already convey.
+        if (!wave.safeTiles) {
+          for (const tile of wave.tiles) {
+            pxTiles.push(this.tileCenter(tile.x, tile.y));
+            const g = this.add.graphics();
+            g.fillStyle(0xffffff, 1);
+            g.fillRoundedRect(
+              this.originX + tile.x * (TILE + GAP),
+              this.originY + tile.y * (TILE + GAP),
+              TILE,
+              TILE,
+              8
+            );
+            g.setDepth(0.5);
+            g.setVisible(false);
+            graphics.push(g);
+          }
         }
 
-        // Safe-zone patterns (Phase 7): a steady green fill, no blink, so
-        // it reads calmly as "stand here" next to the blinking white
-        // danger tiles.
         const safeGraphics = [];
         for (const tile of wave.safeTiles ?? []) {
           const g = this.add.graphics();
@@ -392,7 +395,7 @@ export default class GridScene extends Phaser.Scene {
         g.setVisible(active);
         if (active) g.setAlpha(0.3);
       }
-      if (active && !this.waveEmberEmitters.has(wave.key)) {
+      if (active && wave.pxTiles.length > 0 && !this.waveEmberEmitters.has(wave.key)) {
         this.waveEmberEmitters.set(wave.key, this.fx.embers(wave.pxTiles, TILE));
       }
       if (now >= wave.resolveAt) this.fireWaveImpact(wave);
@@ -438,7 +441,7 @@ export default class GridScene extends Phaser.Scene {
       this.waveEmberEmitters.delete(wave.key);
     }
 
-    this.fx.waveImpact(wave.pxTiles, TILE);
+    if (wave.pxTiles.length > 0) this.fx.waveImpact(wave.pxTiles, TILE);
     if (this.eggPos && wave.tiles.some((t) => t.x === this.eggPos.x && t.y === this.eggPos.y)) {
       const { px, py } = this.tileCenter(this.eggPos.x, this.eggPos.y);
       this.fx.eggHit(px, py);
