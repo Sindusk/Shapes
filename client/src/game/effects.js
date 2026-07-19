@@ -11,6 +11,8 @@ export const FX = {
   EMBER: 0xff6b35,
   BROWN: 0x8b5a2b,
   SHELL: 0xfff3d6,
+  PURPLE: 0x9b59b6, // bolt (ability 1) casts and stuns
+  PALE_PURPLE: 0xd7a9e8,
 };
 
 /**
@@ -50,8 +52,10 @@ export default class Effects {
 
     // Boss damage eruptions (also reused for player-hit bursts).
     this.impactEmitter = burst([FX.RED, FX.EMBER, FX.BROWN]);
-    // Ability 1 laser sparks.
+    // Ability 3 dash sparks.
     this.sparkEmitter = burst([FX.BLUE, FX.PALE_BLUE], { speed: { min: 60, max: 180 } });
+    // Ability 1 bolt casts and stun hits.
+    this.purpleEmitter = burst([FX.PURPLE, FX.PALE_PURPLE], { speed: { min: 50, max: 160 } });
     // Ability 2 barrier shimmer (drifts outward slower, lives longer).
     this.gustEmitter = burst([FX.PALE_BLUE, 0xffffff], {
       speed: { min: 70, max: 150 },
@@ -84,17 +88,22 @@ export default class Effects {
     });
   }
 
-  /** Ability 1: a thin blue laser from the caster to the boss, with spark
-   * bursts at the muzzle and the point of impact. */
-  laser(x1, y1, x2, y2) {
+  /** Ability 1: bolt cast — a purple flash from the caster to the spawn
+   * tile in front of them, where the moving purple tile takes over. */
+  boltCast(x1, y1, x2, y2) {
     const g = this.scene.add.graphics().setDepth(2).setBlendMode(Phaser.BlendModes.ADD);
-    g.lineStyle(7, FX.BLUE, 0.3);
+    g.lineStyle(6, FX.PURPLE, 0.35);
     g.lineBetween(x1, y1, x2, y2);
-    g.lineStyle(2, FX.PALE_BLUE, 1);
+    g.lineStyle(2, FX.PALE_PURPLE, 1);
     g.lineBetween(x1, y1, x2, y2);
-    this.scene.tweens.add({ targets: g, alpha: 0, duration: 200, onComplete: () => g.destroy() });
-    this.sparkEmitter.explode(4, x1, y1);
-    this.sparkEmitter.explode(12, x2, y2);
+    this.scene.tweens.add({ targets: g, alpha: 0, duration: 180, onComplete: () => g.destroy() });
+    this.purpleEmitter.explode(10, x2, y2);
+  }
+
+  /** A player was stunned (bolt hit): purple burst + ring on their tile. */
+  stunFlash(x, y) {
+    this.purpleEmitter.explode(14, x, y);
+    this.ring(x, y, FX.PURPLE, { radius: 30, duration: 300 });
   }
 
   /** Ability 2: a barrier snaps up around the caster — a pale shimmer burst

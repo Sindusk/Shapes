@@ -272,13 +272,18 @@ function LivesPanel({ players, myId }) {
   );
 }
 
+// Mirrors server/src/config.js GLOBAL_COOLDOWN_MS — every cast locks all
+// slots for this long; slot cooldowns of 0 mean "GCD only".
+const GLOBAL_COOLDOWN_MS = 2500;
+
 const ABILITIES = [
   {
     slot: 1,
-    icon: '⚔',
-    label: 'Zap',
-    cooldownMs: 2500,
-    description: 'Fire a laser at the boss. (Damage coming soon.)',
+    icon: '☄',
+    label: 'Bolt',
+    cooldownMs: 0,
+    description:
+      'Send a bolt down the line in front of you. It advances one tile every 0.4s until it hits a wall, stunning anyone on its purple tile for 0.5s.',
   },
   {
     slot: 2,
@@ -307,9 +312,14 @@ function AbilityBar({ me, now }) {
   return (
     <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
       {ABILITIES.map(({ slot, icon, label, cooldownMs }) => {
-        const readyAt = me?.cooldowns?.[slot] ?? 0;
-        const remainingMs = Math.max(0, readyAt - now);
-        const fraction = cooldownMs > 0 ? clamp(remainingMs / cooldownMs, 0, 1) : 0;
+        // A slot is locked by whichever runs longer: its own cooldown or
+        // the shared global cooldown. The overlay fraction is computed
+        // against the binding timer's full duration so it drains smoothly.
+        const slotRemainingMs = Math.max(0, (me?.cooldowns?.[slot] ?? 0) - now);
+        const gcdRemainingMs = Math.max(0, (me?.gcdUntil ?? 0) - now);
+        const remainingMs = Math.max(slotRemainingMs, gcdRemainingMs);
+        const totalMs = slotRemainingMs >= gcdRemainingMs ? cooldownMs : GLOBAL_COOLDOWN_MS;
+        const fraction = totalMs > 0 ? clamp(remainingMs / totalMs, 0, 1) : 0;
         return (
           <div
             key={slot}
@@ -379,12 +389,15 @@ function AbilitiesPanel() {
               {icon} {label}
             </span>
             <span style={{ marginLeft: 'auto', color: '#666', fontSize: 12 }}>
-              {cooldownMs / 1000}s
+              {cooldownMs > 0 ? `${cooldownMs / 1000}s` : 'GCD'}
             </span>
           </div>
           <div style={{ color: '#aaa', fontSize: 12, lineHeight: 1.4 }}>{description}</div>
         </div>
       ))}
+      <div style={{ color: '#666', fontSize: 11, lineHeight: 1.4 }}>
+        Casting any ability triggers a shared {GLOBAL_COOLDOWN_MS / 1000}s global cooldown.
+      </div>
     </div>
   );
 }

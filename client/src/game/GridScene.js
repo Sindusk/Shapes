@@ -22,6 +22,7 @@ export const CANVAS_HEIGHT = BOSS_ZONE_HEIGHT + BOARD + BOTTOM_MARGIN;
 const FACING_ROTATION = { up: 0, right: Math.PI / 2, down: Math.PI, left: -Math.PI / 2 };
 const GOLD = 0xffd700;
 const BARRIER_BLUE = 0xa8d8ff; // player ring color while a barrier is up
+const BOLT_PURPLE = 0x9b59b6; // bolt (ability 1) tile warning color
 
 export default class GridScene extends Phaser.Scene {
   constructor() {
@@ -50,6 +51,10 @@ export default class GridScene extends Phaser.Scene {
     this.attackBars = [];
     this.boss = { state: 'idle', attacks: [], enraged: false };
     this.eggSprite = null;
+    // Bolt projectiles from the latest snapshot; each one's purple tile is
+    // drawn per frame from its segments' absolute active windows, so it
+    // advances on schedule without needing a broadcast per step.
+    this.projectiles = [];
     this.clockOffset = 0; // serverTime - Date.now(), so we can animate off server timestamps
   }
 
@@ -60,6 +65,7 @@ export default class GridScene extends Phaser.Scene {
     this.drawGrid();
     this.drawBoss();
     this.fx = new Effects(this);
+    this.projectileGfx = this.add.graphics().setDepth(0.55); // redrawn every frame
 
     this.keys = this.input.keyboard.addKeys({
       up: Phaser.Input.Keyboard.KeyCodes.UP,
@@ -115,6 +121,7 @@ export default class GridScene extends Phaser.Scene {
   update(time) {
     const now = Date.now() + this.clockOffset;
     this.renderBossFrame(now);
+    this.renderProjectileFrame(now);
     this.renderPlayerFrame(now);
 
     if (time - this.lastMoveAt < MOVE_COOLDOWN_MS) return;
@@ -296,6 +303,26 @@ export default class GridScene extends Phaser.Scene {
     }
   }
 
+  /** Runs every render frame; draws each bolt's currently-active segment as
+   * a pulsing purple tile, advancing along its path purely from the
+   * segments' absolute timestamps. */
+  renderProjectileFrame(now) {
+    this.projectileGfx.clear();
+    for (const proj of this.projectiles) {
+      const active = proj.segments.find((s) => now >= s.activeFrom && now < s.activeTo);
+      if (!active) continue;
+      const pulse = 0.45 + 0.1 * Math.sin(now / 90);
+      this.projectileGfx.fillStyle(BOLT_PURPLE, pulse);
+      this.projectileGfx.fillRoundedRect(
+        this.originX + active.x * (TILE + GAP),
+        this.originY + active.y * (TILE + GAP),
+        TILE,
+        TILE,
+        8
+      );
+    }
+  }
+
   /** Stable per-wave signature: resolveAt is millisecond-precise and
    * unique enough combined with the wave's shape. */
   waveKey(wave) {
@@ -358,6 +385,10 @@ export default class GridScene extends Phaser.Scene {
         if (player.lives < prev.lives) {
           const { px, py } = this.tileCenter(player.x, player.y);
           this.fx.playerHit(px, py);
+        }
+        if (player.stunnedUntil > prev.stunnedUntil) {
+          const { px, py } = this.tileCenter(player.x, player.y);
+          this.fx.stunFlash(px, py);
         }
       }
 
@@ -422,6 +453,7 @@ export default class GridScene extends Phaser.Scene {
     }
 
     if (state.boss) this.updateBoss(state.boss);
+    this.projectiles = state.projectiles ?? [];
     this.updateEgg(state.egg ?? null);
   }
 
@@ -434,7 +466,14 @@ export default class GridScene extends Phaser.Scene {
     const used = (slot) => (player.cooldowns?.[slot] ?? 0) > (prev.cooldowns?.[slot] ?? 0);
     const { px, py } = this.tileCenter(player.x, player.y);
 
-    if (used(1)) this.fx.laser(px, py, this.bossCenter.x, this.bossCenter.y);
+    if (used(1)) {
+      // Purple muzzle pulse on the tile in front of the caster, where the
+      // bolt's first segment spawns (the server rejects wall-facing casts,
+      // so the tile is always in bounds when this fires).
+      const dir = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[player.facing] ?? [0, 0];
+      const front = this.tileCenter(player.x + dir[0], player.y + dir[1]);
+      this.fx.boltCast(px, py, front.px, front.py);
+    }
     if (used(2)) this.fx.barrier(px, py);
     if (used(3)) {
       // Ripple along every tile of the dash path, old position to new.

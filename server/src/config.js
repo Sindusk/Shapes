@@ -36,11 +36,20 @@ export const ENRAGE_ATTACKS_TO_END_MATCH = 3;
 // code is kept intact so it can return later.
 export const EGG_ENABLED = false;
 
-// Ability bar: 4 slots bound to keys 1-4. Cooldowns are in ms.
-export const ABILITY_DAMAGE_COOLDOWN_MS = 2500; // placeholder, does nothing yet
+// Ability bar: 4 slots bound to keys 1-4. Cooldowns are in ms. Every cast
+// also triggers a shared global cooldown; no ability can be cast until it
+// has elapsed. Slot 1 (Bolt) has no cooldown of its own — the GCD covers it.
+export const GLOBAL_COOLDOWN_MS = 2500;
+export const ABILITY_BOLT_COOLDOWN_MS = 0;
 export const ABILITY_BARRIER_COOLDOWN_MS = 25000;
 export const ABILITY_DASH_COOLDOWN_MS = 10000;
 export const ABILITY_INVULN_COOLDOWN_MS = 45000;
+
+// Bolt: a 1x1 line attack that spawns in front of the caster and advances
+// one tile every step until it hits a wall; players on its purple tile are
+// stunned.
+export const BOLT_STEP_MS = 400;
+export const BOLT_STUN_MS = 500;
 
 export const BARRIER_DURATION_MS = 6000; // window in which the barrier can absorb one hit
 export const DASH_TILES = 3;

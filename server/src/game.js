@@ -11,10 +11,13 @@ import {
   ENRAGE_CAST_INTERVAL_MS,
   ENRAGE_CHANNEL_DURATION_MS,
   ENRAGE_ATTACKS_TO_END_MATCH,
-  ABILITY_DAMAGE_COOLDOWN_MS,
+  GLOBAL_COOLDOWN_MS,
+  ABILITY_BOLT_COOLDOWN_MS,
   ABILITY_BARRIER_COOLDOWN_MS,
   ABILITY_DASH_COOLDOWN_MS,
   ABILITY_INVULN_COOLDOWN_MS,
+  BOLT_STEP_MS,
+  BOLT_STUN_MS,
   BARRIER_DURATION_MS,
   DASH_TILES,
   INVULN_DURATION_MS,
@@ -33,7 +36,7 @@ const DIRECTIONS = {
 };
 
 const ABILITY_COOLDOWNS = {
-  1: ABILITY_DAMAGE_COOLDOWN_MS,
+  1: ABILITY_BOLT_COOLDOWN_MS,
   2: ABILITY_BARRIER_COOLDOWN_MS,
   3: ABILITY_DASH_COOLDOWN_MS,
   4: ABILITY_INVULN_COOLDOWN_MS,
@@ -80,6 +83,13 @@ export class Game {
     // The egg: a pushable NPC that spawns at match start. If a boss wave
     // hits its tile, every living player loses a life.
     this.egg = null; // {x, y} | null
+
+    // Bolt projectiles (ability 1). Each has its full path precomputed at
+    // cast time as segments with absolute active windows — the client
+    // animates the purple tile entirely from these timestamps; the server
+    // applies the stun in updateProjectiles(). hitIds ensures one bolt
+    // stuns a given player at most once.
+    this.projectiles = []; // { segments: [{x, y, activeFrom, activeTo}], hitIds: Set }
 
     // phase: 'waiting' (no active match, boss paused) | 'countdown' (match
     // forming) | 'active' (rounds happening)
@@ -135,6 +145,7 @@ export class Game {
       aliveMs: null,
       facing: 'down',
       cooldowns: { 1: 0, 2: 0, 3: 0, 4: 0 }, // slot -> timestamp when usable again
+      gcdUntil: 0, // shared global cooldown across all slots
       stunnedUntil: 0,
       invulnerableUntil: 0,
       barrierUntil: 0, // barrier absorbs one hit while this is in the future
@@ -193,20 +204,24 @@ export class Game {
     return true;
   }
 
-  /** Server-authoritative ability use: validates the caster, cooldown, and
-   * stun state, then dispatches to the per-slot handler. */
+  /** Server-authoritative ability use: validates the caster, global +
+   * per-slot cooldowns, and stun state, then dispatches to the per-slot
+   * handler. Every successful cast triggers the shared global cooldown. */
   tryAbility(id, slot, now = Date.now()) {
     const player = this.players.get(id);
     const cooldownMs = ABILITY_COOLDOWNS[slot];
-    if (!player || player.eliminated || player.benched || !cooldownMs) return false;
+    if (!player || player.eliminated || player.benched || cooldownMs === undefined) return false;
     if (player.stunnedUntil > now) return false;
+    if (player.gcdUntil > now) return false;
     if (player.cooldowns[slot] > now) return false;
 
+    // Bolt can fail (caster facing a wall) — only commit cooldowns on success.
+    if (slot === 1 && !this.abilityBolt(player, now)) return false;
+
     player.cooldowns[slot] = now + cooldownMs;
+    player.gcdUntil = now + GLOBAL_COOLDOWN_MS;
 
     switch (slot) {
-      case 1:
-        break; // damage: placeholder, no effect yet
       case 2:
         player.barrierUntil = now + BARRIER_DURATION_MS;
         break;
@@ -220,6 +235,60 @@ export class Game {
 
     this.dirty = true;
     return true;
+  }
+
+  /** Bolt (ability 1): a 1x1 attack spawns on the tile in front of the
+   * caster and advances one tile every BOLT_STEP_MS until it hits a wall,
+   * passing through players. Anyone standing on its active (purple) tile is
+   * stunned for BOLT_STUN_MS — at most once per bolt. Fails (no cooldown
+   * spent) when the caster is facing a wall. */
+  abilityBolt(caster, now) {
+    const dir = DIRECTIONS[caster.facing];
+    if (!dir) return false;
+
+    const segments = [];
+    let x = caster.x + dir.dx;
+    let y = caster.y + dir.dy;
+    for (let i = 0; x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE; i++) {
+      segments.push({
+        x,
+        y,
+        activeFrom: now + i * BOLT_STEP_MS,
+        activeTo: now + (i + 1) * BOLT_STEP_MS,
+      });
+      x += dir.dx;
+      y += dir.dy;
+    }
+    if (segments.length === 0) return false;
+
+    this.projectiles.push({ segments, hitIds: new Set() });
+    return true;
+  }
+
+  /** Applies bolt stuns and prunes finished bolts. Runs every tick while
+   * players are connected — bolts are castable outside active matches too. */
+  updateProjectiles(now) {
+    if (this.projectiles.length === 0) return;
+
+    for (const proj of this.projectiles) {
+      const active = proj.segments.find((s) => now >= s.activeFrom && now < s.activeTo);
+      if (!active) continue;
+      for (const p of this.players.values()) {
+        if (p.eliminated || p.benched || proj.hitIds.has(p.id)) continue;
+        if (p.x !== active.x || p.y !== active.y) continue;
+        proj.hitIds.add(p.id);
+        p.stunnedUntil = Math.max(p.stunnedUntil, now + BOLT_STUN_MS);
+        this.dirty = true;
+      }
+    }
+
+    const remaining = this.projectiles.filter(
+      (proj) => now < proj.segments[proj.segments.length - 1].activeTo
+    );
+    if (remaining.length !== this.projectiles.length) {
+      this.projectiles = remaining;
+      this.dirty = true;
+    }
   }
 
   /** Moves the caster up to DASH_TILES in their facing direction, stopping
@@ -388,6 +457,7 @@ export class Game {
     this.boss.enraged = false;
     this.lastAttackName = null;
     this.egg = null;
+    this.projectiles = [];
     this.match.round = 0;
     this.match.enrageAttacks = 0;
     this.match.startedAt = null;
@@ -404,6 +474,7 @@ export class Game {
       player.y = null;
       player.facing = 'down';
       player.cooldowns = { 1: 0, 2: 0, 3: 0, 4: 0 };
+      player.gcdUntil = 0;
       player.stunnedUntil = 0;
       player.invulnerableUntil = 0;
       player.barrierUntil = 0;
@@ -456,10 +527,13 @@ export class Game {
         this.boss.attacks = [];
         this.lastAttackName = null;
         this.egg = null;
+        this.projectiles = [];
         this.dirty = true;
       }
       return;
     }
+
+    this.updateProjectiles(now);
 
     if (this.match.phase === 'waiting') return;
 
@@ -481,6 +555,8 @@ export class Game {
       players: [...this.players.values()],
       boss: this.boss,
       egg: this.egg,
+      // hitIds is server-only bookkeeping (and a Set won't serialize).
+      projectiles: this.projectiles.map((p) => ({ segments: p.segments })),
       match: this.match,
     };
   }
