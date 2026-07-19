@@ -195,8 +195,10 @@ function MatchStatus({ match, now }) {
     label = 'Match starting in…';
     timer = formatClockMs(Math.max(0, match.countdownEndAt - now));
   } else if (match.phase === 'active') {
-    label = `Round ${match.round + 1}${match.enraged ? ' — ENRAGED' : ''}`;
-    timer = formatClockMs(Math.max(0, now - match.startedAt));
+    // Countdown to the 5-minute enrage, so the objective (survive until
+    // enrage) is visible for the whole match.
+    label = match.enraged ? `Round ${match.round + 1} — ENRAGED` : `Round ${match.round + 1} — Enrage in`;
+    timer = match.enraged ? null : formatClockMs(Math.max(0, match.startedAt + MAX_MATCH_LENGTH_MS - now));
   }
 
   return (
@@ -271,10 +273,34 @@ function LivesPanel({ players, myId }) {
 }
 
 const ABILITIES = [
-  { slot: 1, icon: '⚔', label: 'Damage', cooldownMs: 2500 },
-  { slot: 2, icon: '💨', label: 'Pushback', cooldownMs: 20000 },
-  { slot: 3, icon: '⚡', label: 'Dash', cooldownMs: 10000 },
-  { slot: 4, icon: '✨', label: 'Invuln', cooldownMs: 45000 },
+  {
+    slot: 1,
+    icon: '⚔',
+    label: 'Zap',
+    cooldownMs: 2500,
+    description: 'Fire a laser at the boss. (Damage coming soon.)',
+  },
+  {
+    slot: 2,
+    icon: '🛡',
+    label: 'Barrier',
+    cooldownMs: 25000,
+    description: 'Shield yourself for 6s. The barrier absorbs the next hit, then shatters.',
+  },
+  {
+    slot: 3,
+    icon: '⚡',
+    label: 'Dash',
+    cooldownMs: 10000,
+    description: 'Dash up to 3 tiles in the direction you are facing.',
+  },
+  {
+    slot: 4,
+    icon: '✨',
+    label: 'Invulnerability',
+    cooldownMs: 45000,
+    description: 'Become immune to all damage for 2s.',
+  },
 ];
 
 function AbilityBar({ me, now }) {
@@ -335,6 +361,30 @@ function AbilityBar({ me, now }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function AbilitiesPanel() {
+  return (
+    <div style={{ width: SIDEBAR_WIDTH, paddingTop: 24 }}>
+      <h2 style={{ fontSize: 14, color: '#aaa', margin: '0 0 8px', textTransform: 'uppercase' }}>
+        Abilities
+      </h2>
+      {ABILITIES.map(({ slot, icon, label, cooldownMs, description }) => (
+        <div key={slot} style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+            <span style={{ color: '#666', fontSize: 12 }}>[{slot}]</span>
+            <span style={{ fontWeight: 'bold' }}>
+              {icon} {label}
+            </span>
+            <span style={{ marginLeft: 'auto', color: '#666', fontSize: 12 }}>
+              {cooldownMs / 1000}s
+            </span>
+          </div>
+          <div style={{ color: '#aaa', fontSize: 12, lineHeight: 1.4 }}>{description}</div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -452,7 +502,10 @@ export default function App() {
           <PhaserGame />
           <AbilityBar me={players.find((p) => p.id === myId)} now={now} />
         </div>
-        <DebugPanel match={match} now={now} />
+        <div>
+          <AbilitiesPanel />
+          <DebugPanel match={match} now={now} />
+        </div>
       </div>
     </div>
   );

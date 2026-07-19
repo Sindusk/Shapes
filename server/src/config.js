@@ -31,13 +31,18 @@ export const ENRAGE_CAST_INTERVAL_MS = 1000;
 export const ENRAGE_CHANNEL_DURATION_MS = 500;
 export const ENRAGE_ATTACKS_TO_END_MATCH = 3;
 
+// The egg: a pushable NPC that punishes everyone when a wave hits it.
+// Currently disabled (spawn is gated on this flag); the push/damage/render
+// code is kept intact so it can return later.
+export const EGG_ENABLED = false;
+
 // Ability bar: 4 slots bound to keys 1-4. Cooldowns are in ms.
 export const ABILITY_DAMAGE_COOLDOWN_MS = 2500; // placeholder, does nothing yet
-export const ABILITY_PUSHBACK_COOLDOWN_MS = 20000;
+export const ABILITY_BARRIER_COOLDOWN_MS = 25000;
 export const ABILITY_DASH_COOLDOWN_MS = 10000;
 export const ABILITY_INVULN_COOLDOWN_MS = 45000;
 
-export const PUSHBACK_STUN_MS = 1000; // applied when a pushed player can't be moved
+export const BARRIER_DURATION_MS = 6000; // window in which the barrier can absorb one hit
 export const DASH_TILES = 3;
 export const INVULN_DURATION_MS = 2000;
 

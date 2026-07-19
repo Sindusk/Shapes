@@ -52,7 +52,7 @@ export default class Effects {
     this.impactEmitter = burst([FX.RED, FX.EMBER, FX.BROWN]);
     // Ability 1 laser sparks.
     this.sparkEmitter = burst([FX.BLUE, FX.PALE_BLUE], { speed: { min: 60, max: 180 } });
-    // Ability 2 wind gust (drifts outward slower, lives longer).
+    // Ability 2 barrier shimmer (drifts outward slower, lives longer).
     this.gustEmitter = burst([FX.PALE_BLUE, 0xffffff], {
       speed: { min: 70, max: 150 },
       lifespan: { min: 300, max: 550 },
@@ -97,9 +97,10 @@ export default class Effects {
     this.sparkEmitter.explode(12, x2, y2);
   }
 
-  /** Ability 2: a gust of wind around the caster — a radial particle burst
-   * plus two expanding rings. */
-  gust(x, y) {
+  /** Ability 2: a barrier snaps up around the caster — a pale shimmer burst
+   * plus two expanding rings; the sustained shield state is the pale-blue
+   * player ring, driven by barrierUntil in renderPlayerFrame. */
+  barrier(x, y) {
     this.gustEmitter.explode(26, x, y);
     this.ring(x, y, FX.PALE_BLUE, { radius: 40, duration: 320 });
     this.ring(x, y, 0xffffff, { radius: 56, duration: 380, width: 2, delay: 70 });

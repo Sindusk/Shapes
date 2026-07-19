@@ -21,6 +21,7 @@ export const CANVAS_HEIGHT = BOSS_ZONE_HEIGHT + BOARD + BOTTOM_MARGIN;
 // last-moved direction. Shapes are drawn pointing up by default (facing 'up' = 0).
 const FACING_ROTATION = { up: 0, right: Math.PI / 2, down: Math.PI, left: -Math.PI / 2 };
 const GOLD = 0xffd700;
+const BARRIER_BLUE = 0xa8d8ff; // player ring color while a barrier is up
 
 export default class GridScene extends Phaser.Scene {
   constructor() {
@@ -364,21 +365,44 @@ export default class GridScene extends Phaser.Scene {
       const { px, py } = this.tileCenter(player.x, player.y);
       let sprite = this.sprites.get(player.id);
 
+      const targetRotation = FACING_ROTATION[player.facing] ?? 0;
+
       if (!sprite) {
         sprite = this.createShape(player);
         sprite.container.setPosition(px, py);
+        sprite.container.setRotation(targetRotation);
         sprite.container.setDepth(1);
+        sprite.moveTarget = { px, py };
+        sprite.rotationTarget = targetRotation;
         this.sprites.set(player.id, sprite);
-      } else if (sprite.container.x !== px || sprite.container.y !== py) {
-        this.tweens.add({ targets: sprite.container, x: px, y: py, duration: 100, ease: 'Power2' });
+      } else if (sprite.moveTarget.px !== px || sprite.moveTarget.py !== py) {
+        // Only start a tween when the *target* tile changes — comparing
+        // against the container's live position instead restacked a fresh
+        // tween on every broadcast that arrived mid-tween (any other
+        // player's move), and the overlapping tweens made sprites visibly
+        // snap backwards ("spaz") when the older tween completed.
+        sprite.moveTarget = { px, py };
+        sprite.moveTween?.stop();
+        sprite.moveTween = this.tweens.add({
+          targets: sprite.container,
+          x: px,
+          y: py,
+          duration: 100,
+          ease: 'Power2',
+        });
       }
       sprite.container.setAlpha(player.eliminated ? 0.25 : 1);
 
-      const targetRotation = FACING_ROTATION[player.facing] ?? 0;
-      if (sprite.container.rotation !== targetRotation) {
-        this.tweens.add({
+      if (sprite.rotationTarget !== targetRotation) {
+        sprite.rotationTarget = targetRotation;
+        sprite.rotationTween?.stop();
+        // Tween along the shortest arc: an equivalent angle within ±180° of
+        // the current rotation (down -> left turns 90°, not 270°).
+        const current = sprite.container.rotation;
+        const shortest = current + Phaser.Math.Angle.Wrap(targetRotation - current);
+        sprite.rotationTween = this.tweens.add({
           targets: sprite.container,
-          rotation: targetRotation,
+          rotation: shortest,
           duration: 100,
           ease: 'Power2',
         });
@@ -411,7 +435,7 @@ export default class GridScene extends Phaser.Scene {
     const { px, py } = this.tileCenter(player.x, player.y);
 
     if (used(1)) this.fx.laser(px, py, this.bossCenter.x, this.bossCenter.y);
-    if (used(2)) this.fx.gust(px, py);
+    if (used(2)) this.fx.barrier(px, py);
     if (used(3)) {
       // Ripple along every tile of the dash path, old position to new.
       const dx = Math.sign(player.x - prev.x);
@@ -478,11 +502,12 @@ export default class GridScene extends Phaser.Scene {
       }
 
       const isSelf = id === this.myId;
+      const shielded = !invulnerable && player.barrierUntil > now;
       sprite.ring.clear();
       sprite.ring.lineStyle(
         isSelf ? 3 : 1.5,
-        invulnerable ? GOLD : 0xffffff,
-        invulnerable ? 1 : isSelf ? 1 : 0.35
+        invulnerable ? GOLD : shielded ? BARRIER_BLUE : 0xffffff,
+        invulnerable || shielded ? 1 : isSelf ? 1 : 0.35
       );
       sprite.ring.strokeCircle(0, 0, sprite.radius + 8);
     }

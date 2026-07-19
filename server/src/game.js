@@ -12,12 +12,13 @@ import {
   ENRAGE_CHANNEL_DURATION_MS,
   ENRAGE_ATTACKS_TO_END_MATCH,
   ABILITY_DAMAGE_COOLDOWN_MS,
-  ABILITY_PUSHBACK_COOLDOWN_MS,
+  ABILITY_BARRIER_COOLDOWN_MS,
   ABILITY_DASH_COOLDOWN_MS,
   ABILITY_INVULN_COOLDOWN_MS,
-  PUSHBACK_STUN_MS,
+  BARRIER_DURATION_MS,
   DASH_TILES,
   INVULN_DURATION_MS,
+  EGG_ENABLED,
 } from './config.js';
 import { buildAttack, allTiles } from './patterns.js';
 
@@ -33,7 +34,7 @@ const DIRECTIONS = {
 
 const ABILITY_COOLDOWNS = {
   1: ABILITY_DAMAGE_COOLDOWN_MS,
-  2: ABILITY_PUSHBACK_COOLDOWN_MS,
+  2: ABILITY_BARRIER_COOLDOWN_MS,
   3: ABILITY_DASH_COOLDOWN_MS,
   4: ABILITY_INVULN_COOLDOWN_MS,
 };
@@ -136,6 +137,7 @@ export class Game {
       cooldowns: { 1: 0, 2: 0, 3: 0, 4: 0 }, // slot -> timestamp when usable again
       stunnedUntil: 0,
       invulnerableUntil: 0,
+      barrierUntil: 0, // barrier absorbs one hit while this is in the future
     };
     this.players.set(id, player);
 
@@ -206,7 +208,7 @@ export class Game {
       case 1:
         break; // damage: placeholder, no effect yet
       case 2:
-        this.abilityPushback(player, now);
+        player.barrierUntil = now + BARRIER_DURATION_MS;
         break;
       case 3:
         this.abilityDash(player, now);
@@ -218,39 +220,6 @@ export class Game {
 
     this.dirty = true;
     return true;
-  }
-
-  /** Pushes every other active player 1 tile away from the caster (including
-   * diagonally, based on their relative position). A push that can't land
-   * in-bounds or on a free tile stuns the target instead. */
-  abilityPushback(caster, now) {
-    const targets = [...this.players.values()].filter(
-      (p) => p !== caster && !p.eliminated && !p.benched
-    );
-
-    const claimed = new Set([`${caster.x},${caster.y}`]);
-    const moves = [];
-
-    for (const p of targets) {
-      const ddx = Math.sign(p.x - caster.x);
-      const ddy = Math.sign(p.y - caster.y);
-      const nx = p.x + ddx;
-      const ny = p.y + ddy;
-      const inBounds = nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE;
-      const key = `${nx},${ny}`;
-
-      if (!inBounds || claimed.has(key) || this.isEggAt(nx, ny)) {
-        p.stunnedUntil = now + PUSHBACK_STUN_MS;
-        continue;
-      }
-      claimed.add(key);
-      moves.push({ p, nx, ny });
-    }
-
-    for (const { p, nx, ny } of moves) {
-      p.x = nx;
-      p.y = ny;
-    }
   }
 
   /** Moves the caster up to DASH_TILES in their facing direction, stopping
@@ -376,6 +345,10 @@ export class Game {
       if (hit.has(`${player.x},${player.y}`)) damage += 1;
       if (eggHit) damage += 1;
       if (damage === 0 || player.invulnerableUntil > now) continue;
+      if (player.barrierUntil > now) {
+        player.barrierUntil = 0; // the barrier absorbs this hit and shatters
+        continue;
+      }
       player.lives -= damage;
       if (player.lives <= 0) {
         player.lives = 0;
@@ -433,6 +406,7 @@ export class Game {
       player.cooldowns = { 1: 0, 2: 0, 3: 0, 4: 0 };
       player.stunnedUntil = 0;
       player.invulnerableUntil = 0;
+      player.barrierUntil = 0;
     }
     for (const player of this.players.values()) {
       const tile = this.findFreeTile();
@@ -459,7 +433,9 @@ export class Game {
     this.boss.attacks = [];
     this.boss.enraged = false;
     this.nextChannelAt = now + BOSS_CAST_INTERVAL_START * 1000;
-    this.egg = this.findFreeTile(); // the egg spawns on a free tile at match start
+    // The egg (currently disabled via EGG_ENABLED) spawns on a free tile at
+    // match start; all its push/damage handling stays live and null-tolerant.
+    this.egg = EGG_ENABLED ? this.findFreeTile() : null;
     this.dirty = true;
   }
 

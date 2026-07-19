@@ -131,16 +131,14 @@ function defamation(players) {
   return [{ tiles, step: 0 }];
 }
 
-/** Half the board in a checkerboard, then the inverse — dodging the
- * follow-up requires a diagonal (two-move) reposition. */
+/** Half the board in a checkerboard; the other parity stays safe for the
+ * whole mechanic, so any adjacent (orthogonal) step is a dodge. The old
+ * inverse follow-up wave was cut — lighting the entire arena forced an
+ * awkward diagonal reposition and was too oppressive. */
 function checkerboard() {
   const parity = Math.random() < 0.5 ? 0 : 1;
   const first = allTiles().filter(({ x, y }) => (x + y) % 2 === parity);
-  const second = allTiles().filter(({ x, y }) => (x + y) % 2 !== parity);
-  return [
-    { tiles: first, step: 0 },
-    { tiles: second, step: 1 },
-  ];
+  return [{ tiles: first, step: 0 }];
 }
 
 /** [Custom] A full row + column through a random pivot, then both
