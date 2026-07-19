@@ -7,7 +7,7 @@ const TILE = 60;
 const GAP = 4;
 const BOARD = GRID_SIZE * TILE + (GRID_SIZE - 1) * GAP;
 const MOVE_COOLDOWN_MS = 150; // client-side throttle; the server still validates every move
-const BOSS_ZONE_HEIGHT = 160; // reserved space above the grid for the boss + stacked cast bars (attacks can overlap)
+const BOSS_ZONE_HEIGHT = 180; // reserved space above the grid for the HP bar, boss + stacked cast bars (attacks can overlap)
 const SIDE_MARGIN = 26; // total horizontal breathing room around the board
 const BOTTOM_MARGIN = 16;
 
@@ -162,28 +162,43 @@ export default class GridScene extends Phaser.Scene {
 
   drawBoss() {
     const centerX = this.originX + BOARD / 2;
-    const bossY = 34;
-    this.bossCenter = { x: centerX, y: bossY }; // laser target for ability 1
-    const g = this.add.graphics();
-    g.fillStyle(0x8e2de2, 1);
-    g.fillTriangle(centerX, bossY - 26, centerX - 30, bossY + 20, centerX + 30, bossY + 20);
-    g.lineStyle(2, 0xffffff, 0.6);
-    g.strokeTriangle(centerX, bossY - 26, centerX - 30, bossY + 20, centerX + 30, bossY + 20);
 
-    // Boss HP bar, tucked between the triangle and the cast bars.
+    // Boss HP bar sits above the boss shape: rectangular (not rounded),
+    // with a black border drawn on top so it stays visible however much
+    // of the bar is filled.
     const hpX = this.originX;
-    const hpY = bossY + 24;
+    const hpY = 6;
     const hpWidth = BOARD;
-    const hpHeight = 8;
+    const hpHeight = 10;
     const hpBg = this.add.graphics();
     hpBg.fillStyle(0x1a1a2e, 1);
-    hpBg.fillRoundedRect(hpX, hpY, hpWidth, hpHeight, 4);
+    hpBg.fillRect(hpX, hpY, hpWidth, hpHeight);
     const hpFill = this.add.graphics();
-    this.bossHpBar = { x: hpX, y: hpY, width: hpWidth, height: hpHeight, fill: hpFill, fraction: 1 };
+    const hpBorder = this.add.graphics();
+    hpBorder.lineStyle(2, 0x000000, 1);
+    hpBorder.strokeRect(hpX, hpY, hpWidth, hpHeight);
+    this.bossHpBar = { x: hpX, y: hpY, width: hpWidth, height: hpHeight, fill: hpFill };
+
+    const bossY = hpY + hpHeight + 34; // boss shape center, below the HP bar
+    this.bossCenter = { x: centerX, y: bossY }; // laser target for ability 1
+    const r = 26;
+    const g = this.add.graphics();
+    g.fillStyle(0x8e2de2, 1);
+    g.fillPoints(this.polygonPoints(10, r).map((p) => ({ x: centerX + p.x, y: bossY + p.y })), true);
+    g.lineStyle(2, 0xffffff, 0.6);
+    g.strokePoints(this.polygonPoints(10, r).map((p) => ({ x: centerX + p.x, y: bossY + p.y })), true);
 
     // Bar geometry; actual bar/text objects are created per concurrent
     // attack in updateBoss() since more than one can be casting at once.
-    this.castBarGeometry = { x: this.originX, y: 70, width: BOARD, height: 12, spacing: 26 };
+    // Half the board's width and blue, so it reads clearly distinct from
+    // the boss HP bar above.
+    this.castBarGeometry = {
+      x: this.originX + BOARD / 4,
+      y: bossY + r + 14,
+      width: BOARD / 2,
+      height: 12,
+      spacing: 26,
+    };
   }
 
   /** Creates one cast bar + name label, stacked below the previous one by
@@ -228,7 +243,7 @@ export default class GridScene extends Phaser.Scene {
       const { x, y, width, height, fill } = this.bossHpBar;
       fill.clear();
       fill.fillStyle(0xff6b35, 1);
-      fill.fillRoundedRect(x, y, width * fraction, height, 4);
+      fill.fillRect(x, y, width * fraction, height);
     }
 
     if (boss.phaseChangedAt && boss.phaseChangedAt !== this.lastPhaseChangedAt) {
@@ -358,7 +373,7 @@ export default class GridScene extends Phaser.Scene {
       const span = bar.channelEndAt - bar.channelStartAt;
       const progress = span > 0 ? Phaser.Math.Clamp((now - bar.channelStartAt) / span, 0, 1) : 1;
       bar.fill.clear();
-      bar.fill.fillStyle(0xe74c3c, 1);
+      bar.fill.fillStyle(0x3498db, 1);
       bar.fill.fillRoundedRect(bar.x, bar.y, bar.width * progress, bar.height, 4);
     }
 
