@@ -45,6 +45,8 @@ export default class GridScene extends Phaser.Scene {
     this.firedWaves = new Map(); // wave key -> resolveAt (for pruning)
     this.waveEmberEmitters = new Map(); // wave key -> ember particle emitter
     this.eggPos = null; // last known egg tile, for egg-hit impact effects
+    this.obstacleSprites = new Map(); // "x,y" -> graphics, obstacles are permanent for the match
+    this.lastPhaseChangedAt = 0; // last boss.phaseChangedAt we've already banner'd
     // One entry per concurrent attack's cast bar: { name, channelStartAt,
     // channelEndAt, bg, fill, text }. Attacks can overlap, so more than one
     // bar can be visible at once, stacked vertically.
@@ -91,6 +93,19 @@ export default class GridScene extends Phaser.Scene {
       .setDepth(10)
       .setVisible(false);
     this.stunText.setPosition(this.originX + BOARD / 2, this.originY + BOARD / 2);
+
+    this.phaseBanner = this.add
+      .text(this.originX + BOARD / 2, this.originY + BOARD / 2, '', {
+        fontFamily: 'sans-serif',
+        fontSize: '40px',
+        fontStyle: 'bold',
+        color: '#ff6b35',
+        stroke: '#000000',
+        strokeThickness: 5,
+      })
+      .setOrigin(0.5)
+      .setDepth(10)
+      .setAlpha(0);
 
     this.onAbilityKey = (slot) => socket.emit('ability', slot);
     this.input.keyboard.on('keydown-ONE', () => this.onAbilityKey(1));
@@ -155,6 +170,17 @@ export default class GridScene extends Phaser.Scene {
     g.lineStyle(2, 0xffffff, 0.6);
     g.strokeTriangle(centerX, bossY - 26, centerX - 30, bossY + 20, centerX + 30, bossY + 20);
 
+    // Boss HP bar, tucked between the triangle and the cast bars.
+    const hpX = this.originX;
+    const hpY = bossY + 24;
+    const hpWidth = BOARD;
+    const hpHeight = 8;
+    const hpBg = this.add.graphics();
+    hpBg.fillStyle(0x1a1a2e, 1);
+    hpBg.fillRoundedRect(hpX, hpY, hpWidth, hpHeight, 4);
+    const hpFill = this.add.graphics();
+    this.bossHpBar = { x: hpX, y: hpY, width: hpWidth, height: hpHeight, fill: hpFill, fraction: 1 };
+
     // Bar geometry; actual bar/text objects are created per concurrent
     // attack in updateBoss() since more than one can be casting at once.
     this.castBarGeometry = { x: this.originX, y: 70, width: BOARD, height: 12, spacing: 26 };
@@ -197,6 +223,19 @@ export default class GridScene extends Phaser.Scene {
     const attacks = boss.attacks ?? [];
     const now = Date.now() + this.clockOffset;
 
+    if (this.bossHpBar) {
+      const fraction = boss.maxHp > 0 ? Phaser.Math.Clamp(boss.hp / boss.maxHp, 0, 1) : 1;
+      const { x, y, width, height, fill } = this.bossHpBar;
+      fill.clear();
+      fill.fillStyle(0xff6b35, 1);
+      fill.fillRoundedRect(x, y, width * fraction, height, 4);
+    }
+
+    if (boss.phaseChangedAt && boss.phaseChangedAt !== this.lastPhaseChangedAt) {
+      this.lastPhaseChangedAt = boss.phaseChangedAt;
+      this.showPhaseBanner(boss.phase);
+    }
+
     const newKeys = new Set();
     for (const attack of attacks) {
       for (const wave of attack.waves) newKeys.add(this.waveKey(wave));
@@ -209,6 +248,7 @@ export default class GridScene extends Phaser.Scene {
     for (const wave of this.waveGlow) {
       if (!newKeys.has(wave.key) && now >= wave.resolveAt - 250) this.fireWaveImpact(wave);
       for (const g of wave.graphics) g.destroy();
+      for (const g of wave.safeGraphics) g.destroy();
     }
     this.waveGlow = [];
 
@@ -242,6 +282,26 @@ export default class GridScene extends Phaser.Scene {
           g.setVisible(false);
           graphics.push(g);
         }
+
+        // Safe-zone patterns (Phase 7): a steady green fill, no blink, so
+        // it reads calmly as "stand here" next to the blinking white
+        // danger tiles.
+        const safeGraphics = [];
+        for (const tile of wave.safeTiles ?? []) {
+          const g = this.add.graphics();
+          g.fillStyle(0x2ecc71, 1);
+          g.fillRoundedRect(
+            this.originX + tile.x * (TILE + GAP),
+            this.originY + tile.y * (TILE + GAP),
+            TILE,
+            TILE,
+            8
+          );
+          g.setDepth(0.5);
+          g.setVisible(false);
+          safeGraphics.push(g);
+        }
+
         this.waveGlow.push({
           key: this.waveKey(wave),
           warnAt: wave.warnAt,
@@ -249,6 +309,7 @@ export default class GridScene extends Phaser.Scene {
           tiles: wave.tiles,
           pxTiles,
           graphics,
+          safeGraphics,
         });
       }
     }
@@ -262,6 +323,22 @@ export default class GridScene extends Phaser.Scene {
       const bar = this.createAttackBar(i);
       bar.text.setText(attack.name);
       return { ...bar, channelStartAt: attack.channelStartAt, channelEndAt: attack.channelEndAt };
+    });
+  }
+
+  /** Phase 7: brief centered "PHASE n" flash when the boss crosses an HP
+   * threshold and reveals new obstacles. */
+  showPhaseBanner(phase) {
+    this.phaseBanner.setText(`PHASE ${phase}`);
+    this.phaseBanner.setAlpha(0);
+    this.tweens.killTweensOf(this.phaseBanner);
+    this.tweens.add({
+      targets: this.phaseBanner,
+      alpha: { from: 0, to: 1 },
+      duration: 250,
+      yoyo: true,
+      hold: 900,
+      ease: 'Cubic.Out',
     });
   }
 
@@ -295,6 +372,10 @@ export default class GridScene extends Phaser.Scene {
       for (const g of wave.graphics) {
         g.setVisible(active);
         if (active) g.setAlpha(blinkAlpha);
+      }
+      for (const g of wave.safeGraphics) {
+        g.setVisible(active);
+        if (active) g.setAlpha(0.3);
       }
       if (active && !this.waveEmberEmitters.has(wave.key)) {
         this.waveEmberEmitters.set(wave.key, this.fx.embers(wave.pxTiles, TILE));
@@ -452,9 +533,58 @@ export default class GridScene extends Phaser.Scene {
       if (!state.players.some((p) => p.id === id)) this.playerData.delete(id);
     }
 
+    const prevBossHp = this.boss?.hp;
     if (state.boss) this.updateBoss(state.boss);
+    if (state.boss && typeof prevBossHp === 'number' && state.boss.hp < prevBossHp) {
+      this.fx.bossHit(this.bossCenter.x, this.bossCenter.y);
+    }
     this.projectiles = state.projectiles ?? [];
     this.updateEgg(state.egg ?? null);
+    this.updateObstacles(state.obstacles ?? []);
+  }
+
+  /** Obstacles are revealed by phase transitions and are permanent for the
+   * match, so this only ever adds tiles, never removes them (a fresh
+   * snapshot after a match reset arrives with an empty array, at which
+   * point applyState's normal per-match teardown isn't needed since
+   * updateObstacles just diffs against the empty list here too). */
+  updateObstacles(obstacles) {
+    const keys = new Set(obstacles.map((o) => `${o.x},${o.y}`));
+
+    for (const [key, sprite] of this.obstacleSprites) {
+      if (!keys.has(key)) {
+        sprite.destroy();
+        this.obstacleSprites.delete(key);
+      }
+    }
+
+    for (const tile of obstacles) {
+      const key = `${tile.x},${tile.y}`;
+      if (this.obstacleSprites.has(key)) continue;
+      const g = this.add.graphics().setDepth(0.4);
+      g.fillStyle(0x3a2a1e, 1);
+      g.fillRoundedRect(
+        this.originX + tile.x * (TILE + GAP),
+        this.originY + tile.y * (TILE + GAP),
+        TILE,
+        TILE,
+        8
+      );
+      g.lineStyle(2, 0x8b5a2b, 0.8);
+      g.lineBetween(
+        this.originX + tile.x * (TILE + GAP) + 8,
+        this.originY + tile.y * (TILE + GAP) + 8,
+        this.originX + tile.x * (TILE + GAP) + TILE - 8,
+        this.originY + tile.y * (TILE + GAP) + TILE - 8
+      );
+      g.lineBetween(
+        this.originX + tile.x * (TILE + GAP) + TILE - 8,
+        this.originY + tile.y * (TILE + GAP) + 8,
+        this.originX + tile.x * (TILE + GAP) + 8,
+        this.originY + tile.y * (TILE + GAP) + TILE - 8
+      );
+      this.obstacleSprites.set(key, g);
+    }
   }
 
   /** The server broadcasts every validated ability use (setting its

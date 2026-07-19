@@ -55,5 +55,20 @@ export const BARRIER_DURATION_MS = 6000; // window in which the barrier can abso
 export const DASH_TILES = 3;
 export const INVULN_DURATION_MS = 2000;
 
+// Boss HP (Phase 7): scales with the number of players in the match, so a
+// solo player and a full room both face roughly the same time-to-kill if
+// everyone attacks optimally. Bolt (ability 1) is the only damage source —
+// casting it while facing up sends it at the boss instead of along the
+// ground. At 1 damage per bolt, gated only by the 2.5s GCD, a single
+// perfect attacker fells 80 HP in ~200s (~3.3 minutes), well inside the
+// enrage timer; extra players scale total HP so the same math holds.
+export const BOSS_HP_PER_PLAYER = 80;
+export const BOLT_BOSS_DAMAGE = 1;
+
+// Boss phases (Phase 7): crossing each HP fraction threshold reveals a new
+// batch of permanent obstacle tiles on the arena (see OBSTACLE_LAYOUTS in
+// game.js). Thresholds are fractions of the match's starting boss HP.
+export const BOSS_PHASE_THRESHOLDS = [0.66, 0.33];
+
 // Port is set via .env at the repo root (see PORTS.md before changing).
 export const PORT = process.env.PORT ?? 3002;

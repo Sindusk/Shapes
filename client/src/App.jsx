@@ -189,11 +189,14 @@ function BurgerMenu({ user, setUser }) {
 function MatchStatus({ match, now }) {
   let label = '';
   let timer = null;
+  let resultLabel = null;
   if (match.phase === 'waiting') {
     label = 'Waiting for players…';
   } else if (match.phase === 'countdown') {
     label = 'Match starting in…';
     timer = formatClockMs(Math.max(0, match.countdownEndAt - now));
+    if (match.lastResult === 'win') resultLabel = { text: 'Boss defeated!', color: '#2ecc71' };
+    else if (match.lastResult === 'loss') resultLabel = { text: 'Defeat…', color: '#e74c3c' };
   } else if (match.phase === 'active') {
     // Countdown to the 5-minute enrage, so the objective (survive until
     // enrage) is visible for the whole match.
@@ -203,6 +206,9 @@ function MatchStatus({ match, now }) {
 
   return (
     <div style={{ margin: '0 0 8px', textAlign: 'center' }}>
+      {resultLabel && (
+        <p style={{ margin: '0 0 4px', fontWeight: 'bold', color: resultLabel.color }}>{resultLabel.text}</p>
+      )}
       <p style={{ margin: 0, color: match.enraged ? '#e74c3c' : '#aaa' }}>{label}</p>
       {timer && (
         <p
@@ -283,7 +289,7 @@ const ABILITIES = [
     label: 'Bolt',
     cooldownMs: 0,
     description:
-      'Send a bolt down the line in front of you. It advances one tile every 0.4s until it hits a wall, stunning anyone on its purple tile for 0.5s.',
+      'Send a bolt down the line in front of you. It advances one tile every 0.4s until it hits a wall, stunning anyone on its purple tile for 0.5s. Face up to send it at the boss instead — it deals damage on arrival.',
   },
   {
     slot: 2,
@@ -402,6 +408,36 @@ function AbilitiesPanel() {
   );
 }
 
+function TileLegend() {
+  const swatch = (color) => (
+    <span
+      style={{
+        display: 'inline-block',
+        width: 14,
+        height: 14,
+        borderRadius: 3,
+        background: color,
+        flexShrink: 0,
+      }}
+    />
+  );
+  return (
+    <div style={{ width: SIDEBAR_WIDTH, paddingTop: 16 }}>
+      <h2 style={{ fontSize: 14, color: '#aaa', margin: '0 0 8px', textTransform: 'uppercase' }}>
+        Tile Guide
+      </h2>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, fontSize: 12 }}>
+        {swatch('#ffffff')}
+        <span style={{ color: '#aaa' }}>Damage incoming — stay out</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+        {swatch('#2ecc71')}
+        <span style={{ color: '#aaa' }}>Safety zone — stay inside</span>
+      </div>
+    </div>
+  );
+}
+
 function DebugPanel({ match, now }) {
   const timings = bossTimings(match, now);
   return (
@@ -414,6 +450,7 @@ function DebugPanel({ match, now }) {
           <div>Cast Interval: {timings.castInterval.toFixed(2)}s</div>
           <div>Channel Time: {timings.channelTime.toFixed(2)}s</div>
           <div>Attack: {match.attackNames?.length ? match.attackNames.join(' + ') : '—'}</div>
+          <div>Boss HP: {match.bossHp}/{match.bossMaxHp} (phase {match.bossPhase})</div>
           <div style={{ color: '#666', fontSize: 12, marginTop: 4 }}>
             progress: {(timings.progress * 100).toFixed(1)}%
           </div>
@@ -455,6 +492,9 @@ export default function App() {
         enraged: state.boss?.enraged ?? false,
         // Attacks can overlap; show every concurrent attack's name.
         attackNames: (state.boss?.attacks ?? []).map((a) => a.name),
+        bossHp: state.boss?.hp ?? 0,
+        bossMaxHp: state.boss?.maxHp ?? 0,
+        bossPhase: state.boss?.phase ?? 1,
       });
     };
     const onWelcome = ({ id, state }) => {
@@ -517,6 +557,7 @@ export default function App() {
         </div>
         <div>
           <AbilitiesPanel />
+          <TileLegend />
           <DebugPanel match={match} now={now} />
         </div>
       </div>

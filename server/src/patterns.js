@@ -289,6 +289,109 @@ function fracture() {
   return waves;
 }
 
+/** Builds a danger/safe wave pair: `safeTiles` is the "stand in the good"
+ * zone (rendered green, never damages), `tiles` is everything else on the
+ * board (rendered white, damages as normal). Used by every safe-zone
+ * pattern below so they only need to describe the safe area. */
+function safeZoneWave(safeTiles, step) {
+  const safe = new Set(safeTiles.map(({ x, y }) => `${x},${y}`));
+  const tiles = allTiles().filter(({ x, y }) => !safe.has(`${x},${y}`));
+  return { tiles, safeTiles, step };
+}
+
+/** [Custom][Safe zone] A single refuge at the board's center; everywhere
+ * else is hit. The simplest "stand in the good" read. */
+function sanctuary() {
+  const safe = [];
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const x = CENTER + dx;
+      const y = CENTER + dy;
+      if (inBounds(x, y)) safe.push({ x, y });
+    }
+  }
+  return [safeZoneWave(safe, 0)];
+}
+
+/** [Custom][Safe zone] The four 2x2 corners are safe; the rest of the
+ * board is hit. Spreads refuge-seekers to the board's edges. */
+function bastion() {
+  const safe = [];
+  for (const [cx, sx] of [[0, 1], [N - 1, -1]]) {
+    for (const [cy, sy] of [[0, 1], [N - 1, -1]]) {
+      for (let dy = 0; dy <= 1; dy++) {
+        for (let dx = 0; dx <= 1; dx++) {
+          const x = cx + dx * sx;
+          const y = cy + dy * sy;
+          if (inBounds(x, y)) safe.push({ x, y });
+        }
+      }
+    }
+  }
+  return [safeZoneWave(safe, 0)];
+}
+
+/** [Custom][Safe zone] A quadrant refuge appears, then relocates to a
+ * different quadrant for the follow-up wave — players who camp the first
+ * safe zone get caught by the second. */
+function refuge() {
+  const half = Math.ceil(N / 2);
+  const quadrants = [
+    { x0: 0, y0: 0 },
+    { x0: N - half, y0: 0 },
+    { x0: 0, y0: N - half },
+    { x0: N - half, y0: N - half },
+  ];
+  const [a, b] = [...quadrants].sort(() => Math.random() - 0.5).slice(0, 2);
+
+  const quadrantTiles = ({ x0, y0 }) => {
+    const tiles = [];
+    for (let dy = 0; dy < half; dy++) {
+      for (let dx = 0; dx < half; dx++) {
+        const x = x0 + dx;
+        const y = y0 + dy;
+        if (inBounds(x, y)) tiles.push({ x, y });
+      }
+    }
+    return tiles;
+  };
+
+  return [safeZoneWave(quadrantTiles(a), 0), safeZoneWave(quadrantTiles(b), 1)];
+}
+
+/** [Custom][Safe zone] A single row or column is safe; the rest of the
+ * board is hit. Funnels everyone into one lane. */
+function causeway() {
+  const vertical = Math.random() < 0.5;
+  const lane = Math.floor(Math.random() * N);
+  const safe = vertical ? lineTiles('left', lane) : lineTiles('top', lane);
+  return [safeZoneWave(safe, 0)];
+}
+
+/** [Custom][Safe zone] A wedge of safety rotates around the center like a
+ * lighthouse beam; almost the whole board is hit each step except
+ * whichever wedge the beam currently covers. */
+function eclipse() {
+  const clockwise = Math.random() < 0.5 ? 1 : -1;
+  const startAngle = Math.random() * Math.PI * 2;
+  const totalSteps = 6;
+  const angleStep = (Math.PI * 2) / totalSteps;
+  const halfWidth = angleStep * 0.75; // wide enough to be a fair refuge amid full-board danger
+
+  const waves = [];
+  for (let s = 0; s < totalSteps; s++) {
+    const angle = startAngle + clockwise * s * angleStep;
+    const safe = allTiles().filter(({ x, y }) => {
+      if (x === CENTER && y === CENTER) return true; // center always a small anchor refuge
+      const rawDiff = Math.atan2(y - CENTER, x - CENTER) - angle;
+      const diff = Math.atan2(Math.sin(rawDiff), Math.cos(rawDiff));
+      return Math.abs(diff) <= halfWidth;
+    });
+    waves.push(safeZoneWave(safe, s));
+  }
+  return waves;
+}
+
 export const PATTERNS = [
   { name: 'Beam', build: beam },
   { name: 'Ring', build: ring },
@@ -302,6 +405,11 @@ export const PATTERNS = [
   { name: 'Spiral', build: spiral },
   { name: 'Mirror', build: mirror },
   { name: 'Fracture', build: fracture },
+  { name: 'Sanctuary', build: sanctuary },
+  { name: 'Bastion', build: bastion },
+  { name: 'Refuge', build: refuge },
+  { name: 'Causeway', build: causeway },
+  { name: 'Eclipse', build: eclipse },
 ];
 
 /**
@@ -322,6 +430,7 @@ export function buildAttack(now, channelMs, { players, excludeName = null }) {
     .filter((w) => w.tiles.length > 0)
     .map((w) => ({
       tiles: w.tiles,
+      ...(w.safeTiles ? { safeTiles: w.safeTiles } : {}),
       warnAt: now + w.step * halfMs,
       resolveAt: now + w.step * halfMs + channelMs,
     }))

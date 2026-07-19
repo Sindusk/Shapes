@@ -220,4 +220,12 @@ export default class Effects {
     this.impactEmitter.explode(12, x, y);
     this.ring(x, y, FX.SHELL, { radius: 44, duration: 400 });
   }
+
+  /** Phase 7: a bolt aimed up landed on the boss — small burst on the boss
+   * triangle so a hit reads instantly even though the HP bar drain is
+   * subtle. */
+  bossHit(x, y) {
+    this.impactEmitter.explode(10, x, y);
+    this.ring(x, y, FX.RED, { radius: 24, duration: 220 });
+  }
 }

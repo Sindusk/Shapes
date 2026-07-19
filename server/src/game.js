@@ -22,6 +22,9 @@ import {
   DASH_TILES,
   INVULN_DURATION_MS,
   EGG_ENABLED,
+  BOSS_HP_PER_PLAYER,
+  BOLT_BOSS_DAMAGE,
+  BOSS_PHASE_THRESHOLDS,
 } from './config.js';
 import { buildAttack, allTiles } from './patterns.js';
 
@@ -34,6 +37,26 @@ const DIRECTIONS = {
   left: { dx: -1, dy: 0 },
   right: { dx: 1, dy: 0 },
 };
+
+const CENTER = Math.floor(GRID_SIZE / 2);
+
+// Obstacle tiles revealed on entering each boss phase (index 0 -> phase 2,
+// index 1 -> phase 3, ...), cumulative and permanent for the rest of the
+// match. Defined relative to GRID_SIZE/CENTER so they scale if the grid
+// size ever changes. A tile occupied by a player at reveal time is simply
+// skipped rather than relocated.
+const OBSTACLE_LAYOUTS = [
+  [
+    { x: 1, y: 1 },
+    { x: GRID_SIZE - 2, y: 1 },
+    { x: 1, y: GRID_SIZE - 2 },
+    { x: GRID_SIZE - 2, y: GRID_SIZE - 2 },
+  ],
+  [
+    { x: 1, y: CENTER },
+    { x: GRID_SIZE - 2, y: CENTER },
+  ],
+];
 
 const ABILITY_COOLDOWNS = {
   1: ABILITY_BOLT_COOLDOWN_MS,
@@ -76,9 +99,22 @@ export class Game {
       state: 'idle', // 'idle' | 'attacking' (attacking whenever attacks.length > 0)
       attacks: [],
       enraged: false,
+      // Phase 7: hp/maxHp scale with player count at match start (see
+      // startMatch). phase starts at 1 and only increases; phaseChangedAt
+      // is bumped on every transition purely so the client can trigger a
+      // one-shot "PHASE n" banner off a timestamp change.
+      hp: 0,
+      maxHp: 0,
+      phase: 1,
+      phaseChangedAt: 0,
     };
     this.nextChannelAt = 0;
     this.lastAttackName = null;
+
+    // Permanent-for-the-match obstacle tiles revealed by phase transitions
+    // (see OBSTACLE_LAYOUTS). Blocks movement/dashing and is excluded from
+    // boss attack tiles.
+    this.obstacles = []; // [{x, y}]
 
     // The egg: a pushable NPC that spawns at match start. If a boss wave
     // hits its tile, every living player loses a life.
@@ -99,6 +135,7 @@ export class Game {
       startedAt: null,
       round: 0,
       enrageAttacks: 0,
+      lastResult: null, // 'win' | 'loss' | null — set by endMatch, cleared by the next startMatch
     };
   }
 
@@ -114,11 +151,15 @@ export class Game {
     return !!this.egg && this.egg.x === x && this.egg.y === y;
   }
 
+  isObstacle(x, y) {
+    return this.obstacles.some((o) => o.x === x && o.y === y);
+  }
+
   findFreeTile() {
     const free = [];
     for (let y = 0; y < GRID_SIZE; y++) {
       for (let x = 0; x < GRID_SIZE; x++) {
-        if (!this.isOccupied(x, y) && !this.isEggAt(x, y)) free.push({ x, y });
+        if (!this.isOccupied(x, y) && !this.isEggAt(x, y) && !this.isObstacle(x, y)) free.push({ x, y });
       }
     }
     if (free.length === 0) return null;
@@ -180,7 +221,7 @@ export class Game {
     const nx = player.x + dir.dx;
     const ny = player.y + dir.dy;
     if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) return false;
-    if (this.isOccupied(nx, ny)) return false;
+    if (this.isOccupied(nx, ny) || this.isObstacle(nx, ny)) return false;
 
     if (this.isEggAt(nx, ny)) {
       // Moving into the egg pushes it one tile further along; if that tile
@@ -188,7 +229,12 @@ export class Game {
       const ex = nx + dir.dx;
       const ey = ny + dir.dy;
       const pushBlocked =
-        ex < 0 || ex >= GRID_SIZE || ey < 0 || ey >= GRID_SIZE || this.isOccupied(ex, ey);
+        ex < 0 ||
+        ex >= GRID_SIZE ||
+        ey < 0 ||
+        ey >= GRID_SIZE ||
+        this.isOccupied(ex, ey) ||
+        this.isObstacle(ex, ey);
       if (pushBlocked) {
         this.egg.x = player.x;
         this.egg.y = player.y;
@@ -241,7 +287,9 @@ export class Game {
    * caster and advances one tile every BOLT_STEP_MS until it hits a wall,
    * passing through players. Anyone standing on its active (purple) tile is
    * stunned for BOLT_STUN_MS — at most once per bolt. Fails (no cooldown
-   * spent) when the caster is facing a wall. */
+   * spent) when the caster is facing a wall. Facing up sends it at the
+   * boss instead: it deals BOLT_BOSS_DAMAGE once it reaches the top row
+   * (see updateProjectiles), on top of still stunning anyone it passes. */
   abilityBolt(caster, now) {
     const dir = DIRECTIONS[caster.facing];
     if (!dir) return false;
@@ -261,24 +309,35 @@ export class Game {
     }
     if (segments.length === 0) return false;
 
-    this.projectiles.push({ segments, hitIds: new Set() });
+    this.projectiles.push({ segments, hitIds: new Set(), hitsBoss: caster.facing === 'up', bossHit: false });
     return true;
   }
 
-  /** Applies bolt stuns and prunes finished bolts. Runs every tick while
-   * players are connected — bolts are castable outside active matches too. */
+  /** Applies bolt stuns, boss damage, and prunes finished bolts. Runs every
+   * tick while players are connected — bolts are castable outside active
+   * matches too (boss damage is a no-op then since boss.hp starts at 0). */
   updateProjectiles(now) {
     if (this.projectiles.length === 0) return;
 
     for (const proj of this.projectiles) {
       const active = proj.segments.find((s) => now >= s.activeFrom && now < s.activeTo);
-      if (!active) continue;
-      for (const p of this.players.values()) {
-        if (p.eliminated || p.benched || proj.hitIds.has(p.id)) continue;
-        if (p.x !== active.x || p.y !== active.y) continue;
-        proj.hitIds.add(p.id);
-        p.stunnedUntil = Math.max(p.stunnedUntil, now + BOLT_STUN_MS);
+      if (active) {
+        for (const p of this.players.values()) {
+          if (p.eliminated || p.benched || proj.hitIds.has(p.id)) continue;
+          if (p.x !== active.x || p.y !== active.y) continue;
+          proj.hitIds.add(p.id);
+          p.stunnedUntil = Math.max(p.stunnedUntil, now + BOLT_STUN_MS);
+          this.dirty = true;
+        }
+      }
+
+      const last = proj.segments[proj.segments.length - 1];
+      if (proj.hitsBoss && !proj.bossHit && now >= last.activeTo && this.boss.hp > 0) {
+        proj.bossHit = true;
+        this.boss.hp = Math.max(0, this.boss.hp - BOLT_BOSS_DAMAGE);
+        this.advancePhaseIfNeeded(now);
         this.dirty = true;
+        this.checkMatchEnd(now);
       }
     }
 
@@ -287,6 +346,28 @@ export class Game {
     );
     if (remaining.length !== this.projectiles.length) {
       this.projectiles = remaining;
+      this.dirty = true;
+    }
+  }
+
+  /** Reveals the next OBSTACLE_LAYOUTS batch whenever boss.hp crosses the
+   * next BOSS_PHASE_THRESHOLDS fraction, advancing boss.phase once per
+   * crossing (a single big hit could in principle cross more than one
+   * threshold at once, so this loops). Tiles already occupied at reveal
+   * time are skipped rather than relocated. */
+  advancePhaseIfNeeded(now) {
+    if (this.boss.maxHp <= 0) return;
+    while (
+      this.boss.phase - 1 < BOSS_PHASE_THRESHOLDS.length &&
+      this.boss.hp / this.boss.maxHp <= BOSS_PHASE_THRESHOLDS[this.boss.phase - 1]
+    ) {
+      const layout = OBSTACLE_LAYOUTS[this.boss.phase - 1] ?? [];
+      for (const tile of layout) {
+        if (this.isOccupied(tile.x, tile.y) || this.isObstacle(tile.x, tile.y)) continue;
+        this.obstacles.push(tile);
+      }
+      this.boss.phase += 1;
+      this.boss.phaseChangedAt = now;
       this.dirty = true;
     }
   }
@@ -301,7 +382,7 @@ export class Game {
       const nx = caster.x + dir.dx;
       const ny = caster.y + dir.dy;
       if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) break;
-      if (this.isOccupied(nx, ny) || this.isEggAt(nx, ny)) break;
+      if (this.isOccupied(nx, ny) || this.isEggAt(nx, ny) || this.isObstacle(nx, ny)) break;
       caster.x = nx;
       caster.y = ny;
     }
@@ -356,6 +437,17 @@ export class Game {
       name = attack.name;
       waves = attack.waves;
       this.lastAttackName = name;
+    }
+
+    // Obstacle tiles can never hold a player, so strip them out of both the
+    // danger and safe-zone tile lists — nobody can be standing there to be
+    // hit, and it avoids drawing a pointless warning on a wall tile.
+    if (this.obstacles.length > 0) {
+      waves = waves.map((w) => ({
+        ...w,
+        tiles: w.tiles.filter((t) => !this.isObstacle(t.x, t.y)),
+        ...(w.safeTiles ? { safeTiles: w.safeTiles.filter((t) => !this.isObstacle(t.x, t.y)) } : {}),
+      }));
     }
 
     this.boss.attacks.push({
@@ -433,11 +525,12 @@ export class Game {
   }
 
   checkMatchEnd(now) {
+    const bossDefeated = this.boss.maxHp > 0 && this.boss.hp <= 0;
     const roster = [...this.players.values()].filter((p) => !p.benched);
     const allEliminated = roster.length > 0 && roster.every((p) => p.eliminated);
     const forcedByEnrage = this.isEnraged(now) && this.match.enrageAttacks >= ENRAGE_ATTACKS_TO_END_MATCH;
 
-    if (!allEliminated && !forcedByEnrage) return;
+    if (!bossDefeated && !allEliminated && !forcedByEnrage) return;
 
     if (forcedByEnrage) {
       for (const p of roster) {
@@ -448,19 +541,21 @@ export class Game {
       }
     }
 
-    this.endMatch(now);
+    this.endMatch(now, bossDefeated ? 'win' : 'loss');
   }
 
-  endMatch(now) {
+  endMatch(now, result = 'loss') {
     this.boss.state = 'idle';
     this.boss.attacks = [];
     this.boss.enraged = false;
     this.lastAttackName = null;
     this.egg = null;
     this.projectiles = [];
+    this.obstacles = [];
     this.match.round = 0;
     this.match.enrageAttacks = 0;
     this.match.startedAt = null;
+    this.match.lastResult = result;
 
     // Everyone still connected (eliminated or benched) rolls into a fresh
     // roster for the next match.
@@ -500,9 +595,17 @@ export class Game {
     this.match.startedAt = now;
     this.match.round = 0;
     this.match.enrageAttacks = 0;
+    this.match.lastResult = null;
     this.boss.state = 'idle';
     this.boss.attacks = [];
     this.boss.enraged = false;
+    // Every connected player at this point has benched === false (see
+    // addPlayer), so players.size is the match's roster size.
+    this.boss.maxHp = BOSS_HP_PER_PLAYER * this.players.size;
+    this.boss.hp = this.boss.maxHp;
+    this.boss.phase = 1;
+    this.boss.phaseChangedAt = 0;
+    this.obstacles = [];
     this.nextChannelAt = now + BOSS_CAST_INTERVAL_START * 1000;
     // The egg (currently disabled via EGG_ENABLED) spawns on a free tile at
     // match start; all its push/damage handling stays live and null-tolerant.
@@ -528,6 +631,7 @@ export class Game {
         this.lastAttackName = null;
         this.egg = null;
         this.projectiles = [];
+        this.obstacles = [];
         this.dirty = true;
       }
       return;
@@ -554,6 +658,7 @@ export class Game {
       serverTime: Date.now(),
       players: [...this.players.values()],
       boss: this.boss,
+      obstacles: this.obstacles,
       egg: this.egg,
       // hitIds is server-only bookkeeping (and a Set won't serialize).
       projectiles: this.projectiles.map((p) => ({ segments: p.segments })),
